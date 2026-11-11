@@ -207,10 +207,16 @@ struct SettingsSidebar: View {
                     ForEach(Background.allCases) { Text($0.rawValue).tag($0) }
                 }
                 IntRow(title: "Mean length (pulses)", value: $model.params.meanLength)
+                Toggle("SVA (spatially variant apodization)", isOn: $model.params.svaEnabled)
+                    .help("Chooses the weighting per range bin: rectangular-window resolution with Hann-level sidelobes.")
                 Picker("Window", selection: $model.params.window) {
                     ForEach(WindowType.allCases) { Text($0.rawValue).tag($0) }
                 }
-                if model.params.window == .taylor {
+                .disabled(model.params.svaEnabled)
+                if model.params.svaEnabled {
+                    Text("SVA replaces the window: each range bin gets its own weighting between rectangular and Hann.")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else if model.params.window == .taylor {
                     IntRow(title: "Taylor n̄", value: $model.params.taylorNbar)
                     NumberRow(title: "Taylor sidelobes (dB below peak)", value: $model.params.taylorSidelobeDB)
                 }

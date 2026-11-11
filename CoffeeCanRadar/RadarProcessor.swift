@@ -148,7 +148,8 @@ final class RadarProcessor {
         // The display range (nBins) is only a crop, so changing it keeps the history.
         if newFs != old.fs || p.syncOnRight != old.params.syncOnRight || d.n != old.d.n || d.nfft != old.d.nfft
             || p.window != old.params.window || p.taylorNbar != old.params.taylorNbar
-            || p.taylorSidelobeDB != old.params.taylorSidelobeDB || p.pgaEnabled != old.params.pgaEnabled {
+            || p.taylorSidelobeDB != old.params.taylorSidelobeDB || p.pgaEnabled != old.params.pgaEnabled
+            || p.svaEnabled != old.params.svaEnabled {
             resetProcessing()
         } else if p.background != old.params.background {
             meanPulse = []; nMean = 0; prevPulse = nil
@@ -192,7 +193,8 @@ final class RadarProcessor {
         avgPow = []; holdPow = []; pendingRows = []
         pulseCount = 0
         generation += 1
-        window = makeWindow(params, n: d.n)
+        // SVA chooses its own weighting per bin, so it starts from unwindowed (rectangular) data.
+        window = params.svaEnabled ? [Double](repeating: 1, count: d.n) : makeWindow(params, n: d.n)
         windowScale = 2 / window.reduce(0, +)     // sine of amplitude 1 -> 0 dBFS
         pga = nil
         cplxRe = [Double](repeating: 0, count: d.nfft)
@@ -349,6 +351,13 @@ final class RadarProcessor {
             p.add(a, blockSize: max(4, params.pgaPulses), iterations: params.pgaIterations, bins: lo...hi,
                   minAgreement: params.pgaMinAgreement)
             p.correct(&a)
+            if params.svaEnabled {
+                let y = svaSpectrum(setup: setup, re: a.re, im: a.im, n: n, log2n: d.log2n)
+                let s2 = windowScale * windowScale / 4
+                for k in 0..<nb { pow[k] = (y.re[k] * y.re[k] + y.im[k] * y.im[k]) * s2 }
+                accumulate(pow)
+                return
+            }
             for k in 0..<nfft {
                 cplxRe[k] = k < n ? a.re[k] * window[k] : 0
                 cplxIm[k] = k < n ? a.im[k] * window[k] : 0
@@ -357,6 +366,15 @@ final class RadarProcessor {
             // analytic sine of amplitude A peaks at A * sum(w): same 0 dBFS reference as below
             let s2 = windowScale * windowScale / 4
             for k in 0..<nb { pow[k] = (cplxRe[k] * cplxRe[k] + cplxIm[k] * cplxIm[k]) * s2 }
+            accumulate(pow)
+            return
+        }
+
+        if params.svaEnabled {
+            // Real input through a complex FFT: a sine of amplitude A peaks at A*N/2.
+            let y = svaSpectrum(setup: setup, re: x, im: [Double](repeating: 0, count: n), n: n, log2n: d.log2n)
+            let s2 = windowScale * windowScale
+            for k in 0..<nb { pow[k] = (y.re[k] * y.re[k] + y.im[k] * y.im[k]) * s2 }
             accumulate(pow)
             return
         }

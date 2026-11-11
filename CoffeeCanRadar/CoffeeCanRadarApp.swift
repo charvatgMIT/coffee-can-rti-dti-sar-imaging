@@ -134,6 +134,47 @@ enum CommandLineTools {
             }
         }
 
+        // 3b. SVA: a strong and a 50 dB weaker tone. SVA should keep the rectangular mainlobe
+        //     width, push sidelobes far down, and keep the weak tone at its true level.
+        do {
+            let n = 480, log2m = 11, m = 1 << log2m
+            let ovs = Double(m) / Double(n)               // FFT bins per Nyquist bin
+            let setup = vDSP_create_fftsetupD(vDSP_Length(log2m), FFTRadix(kFFTRadix2))!
+            defer { vDSP_destroy_fftsetupD(setup) }
+            let f1 = 60.3, f2 = 72.7, a2 = pow(10, -50.0 / 20)   // cycles per pulse
+            func spectra(_ amp2: Double) -> (rect: [Double], sva: [Double]) {
+                let x = (0..<n).map { t -> Double in
+                    sin(2 * Double.pi * f1 * Double(t) / Double(n) + 0.4) + amp2 * sin(2 * Double.pi * f2 * Double(t) / Double(n) + 1.1)
+                }
+                var re = [Double](repeating: 0, count: m), im = re
+                for t in 0..<n { re[t] = x[t] }
+                fftInPlace(setup, &re, &im, log2n: log2m)
+                let y = svaSpectrum(setup: setup, re: x, im: [Double](repeating: 0, count: n), n: n, log2n: log2m)
+                let db = { (r: [Double], i: [Double]) in (0..<(m / 2)).map { 10 * log10(r[$0] * r[$0] + i[$0] * i[$0] + 1e-30) } }
+                return (db(re, im), db(y.re, y.im))
+            }
+            func width3dB(_ db: [Double], _ k: Int) -> Double {
+                var lo = k, hi = k
+                while db[lo] > db[k] - 3 { lo -= 1 }
+                while db[hi] > db[k] - 3 { hi += 1 }
+                return Double(hi - lo) / ovs
+            }
+            let one = spectra(0)
+            let k1 = Int((f1 * ovs).rounded())
+            let pk = one.sva[(k1 - 3)...(k1 + 3)].max()!
+            let far = (0..<(m / 2)).filter { abs(Double($0) - f1 * ovs) > 2.5 * ovs }
+            let psl = far.map { one.sva[$0] }.max()! - pk
+            let pslRect = far.map { one.rect[$0] }.max()! - one.rect[(k1 - 3)...(k1 + 3)].max()!
+            let wRect = width3dB(one.rect, k1), wSVA = width3dB(one.sva, k1)
+            let two = spectra(a2)
+            let k2 = Int((f2 * ovs).rounded())
+            let weak = two.sva[(k2 - 3)...(k2 + 3)].max()! - two.sva[(k1 - 3)...(k1 + 3)].max()!
+            let pass = psl < -60 && wSVA < 1.1 * wRect && abs(weak + 50) < 1.5
+            ok = ok && pass
+            print(String(format: "%@ SVA: sidelobes %.1f dB (rect %.1f), -3 dB width %.2f bins (rect %.2f), weak tone %.1f dB (expect -50)",
+                         pass ? "PASS" : "FAIL", psl, pslRect, wSVA, wRect, weak))
+        }
+
         // 4. Range PGA: a target smeared by a known sweep phase error.
         do {
             func run(pga: Bool) -> (peak: Double, phase: [Float]?, n: Int) {

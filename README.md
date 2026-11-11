@@ -14,7 +14,9 @@ waterfall. The processing follows `read_data_RTI.m` from the MIT IAP radar cours
 - Sync on either input, with a warning if the sync appears to be on the other input or Tp
   doesn't match the sync period.
 - Background options: subtract the mean pulse, 2-pulse canceller, or none.
-- Rectangular, Hann, Blackman or Taylor window before the FFT.
+- Rectangular, Hann, Blackman or Taylor window before the FFT, or spatially variant
+  apodization (SVA), which picks the weighting per range bin for rectangular-window
+  resolution with low sidelobes.
 - Range phase gradient autofocus (PGA) to remove sweep nonlinearity, with a plot of the
   estimated phase error.
 - VCO band presets from the Mini-Circuits ZX95-2536C+ datasheet (full 0–5 V range, ISM band,

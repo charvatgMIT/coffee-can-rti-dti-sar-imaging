@@ -34,6 +34,7 @@ struct RadarParams: Equatable, Codable {
     var window: WindowType = .rect
     var taylorNbar = 4                  // Taylor window: number of nearly constant-level sidelobes
     var taylorSidelobeDB: Double = 30   // Taylor window: peak sidelobe level below the mainlobe (dB)
+    var svaEnabled = false           // spatially variant apodization in range (replaces the window)
     var zeroPad = 4                  // zpad = 8*N/2 = 4N
     var traceAveraging = 1
     var peakHold = false
