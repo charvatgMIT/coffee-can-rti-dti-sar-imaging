@@ -1,0 +1,446 @@
+import AVFoundation
+import CoreAudio
+import CoreGraphics
+import Foundation
+import SwiftUI
+
+struct LiveStats {
+    var pulseRateHz: Double?
+    var periodMs: Double?
+    var jitterIntegerUs: Double?
+    var jitterInterpUs: Double?
+    var levelL: Float = 0
+    var levelR: Float = 0
+    var peakRange: Double?
+    var peakDB: Double?
+}
+
+enum SourceKind { case none, live, simulation }
+
+/// A setting change the app recommends after looking at the incoming signals.
+enum Suggestion: Equatable {
+    case swapChannels(toRight: Bool)
+    case setTp(Double)
+
+    var message: String {
+        switch self {
+        case .swapChannels(let toRight):
+            return toRight
+                ? "The sync square wave appears to be on the RIGHT input and the IF on the LEFT."
+                : "The sync square wave appears to be on the LEFT input and the IF on the RIGHT."
+        case .setTp(let tp):
+            return String(format: "The sync period is %.2f ms, so each up-chirp (sync high) lasts about %.2f ms.", 2 * tp, tp)
+        }
+    }
+
+    var action: String {
+        switch self {
+        case .swapChannels(let toRight): return toRight ? "Use right input for sync" : "Use left input for sync"
+        case .setTp(let tp): return String(format: "Set Tp to %.2f ms", tp)
+        }
+    }
+}
+
+/// Main-thread state for the UI. DSP runs on `queue`; snapshots come back ~30 times a second.
+final class RadarModel: ObservableObject {
+    @Published var params = RadarModel.loadParams() { didSet { paramsChanged(from: oldValue) } }
+    @Published private(set) var suggestion: Suggestion?
+    @Published var devices: [AudioDeviceInfo] = []
+    @Published var selectedDeviceID: AudioDeviceID = 0 { didSet { if selectedDeviceID != oldValue { userPicked = true } } }
+    @Published var paused = false { didSet { let p = paused, proc = processor; queue.async { proc.paused = p } } }
+    @Published private(set) var source: SourceKind = .none
+    @Published private(set) var status = "Idle. Press Start to read the UCA222."
+    @Published private(set) var statusIsError = false
+    @Published private(set) var derived = Derived(RadarParams(), fs: 48000)
+    @Published private(set) var trace: [Float]?
+    @Published private(set) var hold: [Float]?
+    @Published private(set) var scope: ScopeSnapshot?
+    @Published private(set) var edge: EdgeSnapshot?
+    @Published private(set) var stats = LiveStats()
+    @Published private(set) var pulseCount = 0
+    @Published private(set) var rtiImage: CGImage?
+    @Published private(set) var pgaPhase: [Float]?
+    @Published private(set) var pgaUpdates = 0
+    @Published private(set) var pgaAccepted = 0
+    @Published private(set) var pgaAgreement: Double?
+
+    let rti = RTIBuffer()
+    private let queue = DispatchQueue(label: "org.coffeecanradar.CoffeeCanRadar.dsp", qos: .userInteractive)
+    private let processor = RadarProcessor()
+    private let input = AudioInput()
+    private var simulator: SimulatedSource?
+    private var timer: Timer?
+    private var fs: Double = 48000
+    private var generation = -1
+    private var userPicked = false
+
+    init() {
+        derived = Derived(params, fs: fs)
+        let p = params, f = fs, proc = processor
+        queue.async { proc.update(params: p, fs: f) }
+        refreshDevices()
+        timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30, repeats: true) { [weak self] _ in self?.poll() }
+        if CommandLine.arguments.contains("--simulate") {
+            DispatchQueue.main.async { self.startSimulation() }
+        }
+        SnapshotTool.scheduleIfRequested(model: self)
+    }
+
+    // MARK: devices
+
+    func refreshDevices() {
+        devices = AudioDevices.inputs()
+        let keep = userPicked && devices.contains { $0.id == selectedDeviceID }
+        if !keep, let uca = devices.first(where: { $0.looksLikeUCA222 }) {
+            selectedDeviceID = uca.id
+            userPicked = false
+        } else if !devices.contains(where: { $0.id == selectedDeviceID }), let first = devices.first {
+            selectedDeviceID = first.id
+            userPicked = false
+        }
+    }
+
+    // MARK: sources
+
+    func startLive() {
+        stop()
+        refreshDevices()
+        guard let dev = devices.first(where: { $0.id == selectedDeviceID }) else {
+            setStatus("No audio input selected. Is the UCA222 plugged in?", error: true)
+            return
+        }
+        requestMicrophone { [weak self] granted in
+            guard let self else { return }
+            guard granted else {
+                self.setStatus("Microphone access is off. Allow Coffee Can Radar in System Settings → Privacy & Security → Microphone.", error: true)
+                return
+            }
+            do {
+                try self.input.prepare(deviceID: dev.id)
+                self.begin(fs: self.input.sampleRate)
+                let proc = self.processor, q = self.queue
+                self.input.onSamples = { l, r in q.async { proc.push(l, r) } }
+                try self.input.start()
+                self.source = .live
+                if self.input.deviceChannels < 2 {
+                    self.setStatus("\(dev.name) is delivering only \(self.input.deviceChannels) channel. Trigger and IF need stereo.", error: true)
+                } else {
+                    self.setStatus("Live: \(dev.name), \(Int(self.input.sampleRate)) Hz, \(self.input.deviceChannels) ch.")
+                }
+            } catch {
+                self.input.stop()
+                self.setStatus("Audio start failed: \(error.localizedDescription)", error: true)
+            }
+        }
+    }
+
+    func startSimulation() {
+        stop()
+        let sim = SimulatedSource(params: params)
+        begin(fs: 48000)
+        let proc = processor
+        sim.onSamples = { l, r in proc.push(l, r) }   // already on `queue`
+        sim.start(queue: queue)
+        simulator = sim
+        source = .simulation
+        setStatus("Simulation: targets at 8 m (fixed), 13–37 m (moving) and 60 m. The sync period is not a whole number of samples.")
+    }
+
+    func stop() {
+        input.onSamples = nil
+        input.stop()
+        simulator?.stop()
+        simulator = nil
+        if source != .none { setStatus("Stopped.") }
+        source = .none
+        paused = false
+    }
+
+    private func begin(fs newFs: Double) {
+        fs = newFs
+        derived = Derived(params, fs: newFs)
+        let p = params, proc = processor
+        queue.async { proc.update(params: p, fs: newFs); proc.restart() }
+        paused = false
+        stats = LiveStats()
+        suggestion = nil
+    }
+
+    private func requestMicrophone(_ done: @escaping (Bool) -> Void) {
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .authorized: done(true)
+        case .notDetermined:
+            AVCaptureDevice.requestAccess(for: .audio) { ok in DispatchQueue.main.async { done(ok) } }
+        default: done(false)
+        }
+    }
+
+    private func setStatus(_ s: String, error: Bool = false) {
+        status = s
+        statusIsError = error
+    }
+
+    // MARK: settings
+
+    private static let paramsKey = "RadarParams"
+
+    private static func loadParams() -> RadarParams {
+        // Merge the saved settings over the defaults so settings added in later versions still load.
+        guard let data = UserDefaults.standard.data(forKey: paramsKey),
+              let saved = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let defaultsData = try? JSONEncoder().encode(RadarParams()),
+              var merged = try? JSONSerialization.jsonObject(with: defaultsData) as? [String: Any] else {
+            return RadarParams()
+        }
+        merged.merge(saved) { _, new in new }
+        guard let mergedData = try? JSONSerialization.data(withJSONObject: merged),
+              var p = try? JSONDecoder().decode(RadarParams.self, from: mergedData) else { return RadarParams() }
+        if saved["band"] == nil { p.band = Band.allCases.first { $0.matches(p) } ?? .custom }
+        return p
+    }
+
+    func applySuggestion() {
+        switch suggestion {
+        case .swapChannels(let toRight): params.syncOnRight = toRight
+        case .setTp(let tp): params.tpMs = tp
+        case nil: break
+        }
+        suggestion = nil
+        stats = LiveStats()
+    }
+
+    func resetSettings() {
+        params = RadarParams()
+    }
+
+    private func paramsChanged(from old: RadarParams) {
+        guard params != old else { return }
+        // Keep the band picker and f start / f stop consistent.
+        if params.band != old.band, let r = params.band.range {
+            params.fStartMHz = r.start
+            params.fStopMHz = r.stop
+        } else if params.band != .custom && !params.band.matches(params) {
+            params.band = .custom
+        }
+        if let data = try? JSONEncoder().encode(params) {
+            UserDefaults.standard.set(data, forKey: RadarModel.paramsKey)
+        }
+        if params.syncOnRight != old.syncOnRight || params.tpMs != old.tpMs {
+            stats = LiveStats()
+            suggestion = nil
+        }
+        derived = Derived(params, fs: fs)
+        let p = params, f = fs, proc = processor
+        queue.async { proc.update(params: p, fs: f) }
+        if params.rtiSeconds != old.rtiSeconds {
+            resetRTI(width: rti.width)
+        } else if params.dbTop != old.dbTop || params.dbRange != old.dbRange {
+            rti.recolor(top: params.dbTop, range: params.dbRange)
+            rtiImage = rti.makeImage()
+        }
+    }
+
+    /// Pulses in the RTI history: the sync period is 2*Tp (high = up-chirp, low = down-chirp).
+    private var rtiPulses: Int {
+        Int((params.rtiSeconds * 1000 / (2 * params.tpMs)).rounded())
+    }
+
+    private func resetRTI(width: Int) {
+        rti.reset(width: width, pulses: rtiPulses, top: params.dbTop, range: params.dbRange)
+        rtiImage = rti.makeImage()
+    }
+
+    /// Binding to a range setting (stored in metres) shown in the chosen display unit.
+    func inDisplayUnits(_ key: WritableKeyPath<RadarParams, Double>) -> Binding<Double> {
+        Binding(get: { self.params[keyPath: key] * self.params.rangeUnit.perMeter },
+                set: { self.params[keyPath: key] = $0 / self.params.rangeUnit.perMeter })
+    }
+
+    func resetPGA() {
+        let proc = processor
+        queue.async { proc.resetPGA() }
+    }
+
+    func clearHold() {
+        let proc = processor
+        queue.async { proc.clearHold() }
+    }
+
+    func autoScale() {
+        guard let t = trace, t.count > 1 else { return }
+        let mx = Double(t[1..<min(t.count, derived.nBins)].max() ?? -60)
+        params.dbTop = (ceil((mx + 3) / 5) * 5)
+    }
+
+    // MARK: polling
+
+    private func poll() {
+        let proc = processor
+        queue.async { [weak self] in
+            let s = proc.takeSnapshot()
+            DispatchQueue.main.async { self?.apply(s) }
+        }
+    }
+
+    private func apply(_ s: ProcessorSnapshot) {
+        if s.generation != generation {
+            generation = s.generation
+            resetRTI(width: s.derived.nfft / 2)
+        }
+        if !s.newRows.isEmpty {
+            var added = false
+            for row in s.newRows where rti.append(row, top: params.dbTop, range: params.dbRange) { added = true }
+            if added { rtiImage = rti.makeImage() }
+        }
+        if source == .none && s.newRows.isEmpty && s.scope == nil { return }
+
+        trace = s.traceDB
+        hold = s.holdDB
+        if let sc = s.scope { scope = sc }
+        if let e = s.edge { edge = e }
+        pgaPhase = s.pgaPhase
+        if pgaUpdates != s.pgaUpdates { pgaUpdates = s.pgaUpdates }
+        if pgaAccepted != s.pgaAccepted { pgaAccepted = s.pgaAccepted }
+        pgaAgreement = s.pgaAgreement
+        if pulseCount != s.pulseCount { pulseCount = s.pulseCount }
+
+        var st = stats
+        st.pulseRateHz = s.pulseRateHz ?? st.pulseRateHz
+        st.periodMs = s.periodMs ?? st.periodMs
+        st.jitterIntegerUs = s.jitterIntegerUs ?? st.jitterIntegerUs
+        st.jitterInterpUs = s.jitterInterpUs ?? st.jitterInterpUs
+        st.levelL = max(s.peakL, st.levelL * 0.85)
+        st.levelR = max(s.peakR, st.levelR * 0.85)
+        if let t = s.traceDB { (st.peakRange, st.peakDB) = strongestReturn(t, s.derived) }
+        stats = st
+        updateSuggestion(s)
+    }
+
+    /// Checks that the trigger channel looks like a square wave and that its period matches Tp.
+    private func updateSuggestion(_ s: ProcessorSnapshot) {
+        guard source == .live, let sqT = s.squarenessTrigger, let sqI = s.squarenessIF else { return }
+        var next: Suggestion?
+        if sqT < 0.5 && sqI > 0.65 {
+            next = .swapChannels(toRight: !params.syncOnRight)
+        } else if sqT > 0.65, let period = s.periodMs, let rate = s.pulseRateHz, rate > 1 {
+            // The sync is high during the up-chirp and low during the down-chirp, so Tp is half its period.
+            let tp = (period / 2 * 100).rounded() / 100
+            if abs(tp - params.tpMs) / params.tpMs > 0.05 { next = .setTp(tp) }
+        }
+        if next != suggestion { suggestion = next }
+    }
+
+    /// Largest bin beyond 0.5 m (skips DC / feed-through), refined with a parabolic fit.
+    private func strongestReturn(_ db: [Float], _ d: Derived) -> (Double?, Double?) {
+        let first = max(1, Int(ceil(0.5 / d.metersPerBin)))
+        let nb = min(db.count, d.nBins)
+        guard first < nb - 1 else { return (nil, nil) }
+        var kb = first
+        for k in first..<nb where db[k] > db[kb] { kb = k }
+        var kf = Double(kb)
+        if kb > 0 && kb + 1 < nb {
+            let a = Double(db[kb - 1]), b = Double(db[kb]), c = Double(db[kb + 1])
+            let den = a - 2 * b + c
+            if den < 0 { kf += 0.5 * (a - c) / den }
+        }
+        return (kf * d.metersPerBin, Double(db[kb]))
+    }
+}
+
+// MARK: - RTI image
+
+/// Rolling range-time-intensity image, newest row first, coloured with a jet map.
+/// Long histories keep the image at most `maxRows` tall by combining several pulses per
+/// row (keeping the strongest value in each range bin, so brief targets stay visible).
+final class RTIBuffer {
+    static let maxRows = 400   // about the plot height in pixels, so scrolling never resamples rows
+    private(set) var height = 400
+    private(set) var pulsesPerRow = 1
+    private(set) var width = 0
+    private(set) var rows = 0
+    private var db: [Float] = []
+    private var rgba: [UInt8] = []
+    private var newest = 0
+    private var pending: [Float] = []
+    private var pendingCount = 0
+
+    static let jet: [UInt8] = (0..<256).flatMap { i -> [UInt8] in
+        let v = Double(i) / 255
+        let c = { (x: Double) in UInt8(min(1, max(0, 1.5 - abs(4 * v - x))) * 255) }
+        return [c(3), c(2), c(1), 255]
+    }
+
+    /// Sizes the buffer to hold `pulses` pulses of history.
+    func reset(width: Int, pulses: Int, top: Double, range: Double) {
+        let total = max(10, pulses)
+        pulsesPerRow = max(1, Int((Double(total) / Double(RTIBuffer.maxRows)).rounded(.up)))
+        height = max(10, total / pulsesPerRow)
+        self.width = width
+        rows = 0
+        newest = 0
+        pending = []
+        pendingCount = 0
+        db = [Float](repeating: -400, count: width * height)
+        rgba = [UInt8](repeating: 0, count: width * height * 4)
+        recolor(top: top, range: range)
+    }
+
+    /// Adds one pulse; returns true when a new image row was completed.
+    @discardableResult
+    func append(_ row: [Float], top: Double, range: Double) -> Bool {
+        guard row.count == width, width > 0 else { return false }
+        if pendingCount == 0 {
+            pending = row
+        } else {
+            for k in 0..<width where row[k] > pending[k] { pending[k] = row[k] }
+        }
+        pendingCount += 1
+        guard pendingCount >= pulsesPerRow else { return false }
+        pendingCount = 0
+        let row = pending
+        newest = (newest - 1 + height) % height
+        let base = newest * width
+        for k in 0..<width { db[base + k] = row[k] }
+        colorRow(newest, top: top, range: range)
+        rows = min(rows + 1, height)
+        return true
+    }
+
+    func recolor(top: Double, range: Double) {
+        for r in 0..<height { colorRow(r, top: top, range: range) }
+    }
+
+    private func colorRow(_ r: Int, top: Double, range: Double) {
+        let lo = Float(top - range), scale = Float(255 / max(1, range))
+        let base = r * width
+        for k in 0..<width {
+            let i = Int(max(0, min(255, ((db[base + k] - lo) * scale).rounded())))
+            let p = (base + k) * 4
+            rgba[p] = RTIBuffer.jet[i * 4]
+            rgba[p + 1] = RTIBuffer.jet[i * 4 + 1]
+            rgba[p + 2] = RTIBuffer.jet[i * 4 + 2]
+            rgba[p + 3] = 255
+        }
+    }
+
+    func makeImage() -> CGImage? {
+        guard width > 0 else { return nil }
+        let rowBytes = width * 4
+        var ordered = Data(count: rgba.count)
+        // rows newest ... height-1 then 0 ... newest-1
+        let headRows = height - newest
+        ordered.withUnsafeMutableBytes { dst in
+            rgba.withUnsafeBytes { src in
+                dst.baseAddress!.copyMemory(from: src.baseAddress! + newest * rowBytes, byteCount: headRows * rowBytes)
+                if newest > 0 {
+                    (dst.baseAddress! + headRows * rowBytes).copyMemory(from: src.baseAddress!, byteCount: newest * rowBytes)
+                }
+            }
+        }
+        guard let provider = CGDataProvider(data: ordered as CFData) else { return nil }
+        return CGImage(width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: rowBytes,
+                       space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                       bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipLast.rawValue),
+                       provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent)
+    }
+}
