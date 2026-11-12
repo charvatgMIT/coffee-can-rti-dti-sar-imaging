@@ -63,6 +63,9 @@ final class RadarModel: ObservableObject {
     @Published private(set) var pgaUpdates = 0
     @Published private(set) var pgaAccepted = 0
     @Published private(set) var pgaAgreement: Double?
+    @Published private(set) var pencilTargets: [(range: Double, db: Double)] = []
+    @Published private(set) var pencilOrder: Int?
+    @Published private(set) var pencilMs: Double?
 
     let rti = RTIBuffer()
     private let queue = DispatchQueue(label: "org.coffeecanradar.CoffeeCanRadar.dsp", qos: .userInteractive)
@@ -282,11 +285,37 @@ final class RadarModel: ObservableObject {
         }
     }
 
+    // automatic top: per-pulse peak levels over the last few seconds, and when the top last moved
+    private var levelHistory: [(time: Double, db: Double)] = []
+    private var lastTopChange = 0.0
+
+    /// Moves the top dB to follow the 90th percentile of the per-pulse peak over the last 10 s.
+    /// The top only moves when that level leaves a 10 dB band, by whole 5 dB steps, and at
+    /// most every 5 s, so single pulses can't change the scale or recolour the RTI.
+    private func updateAutoTop(rows: [[Float]]) {
+        let now = ProcessInfo.processInfo.systemUptime
+        let hi = min(derived.nBins, rows.first?.count ?? 0)
+        if hi > 2 {
+            for row in rows { levelHistory.append((now, Double(row[1..<hi].max() ?? -200))) }
+        }
+        levelHistory.removeAll { now - $0.time > 10 }
+        guard params.autoTop, levelHistory.count >= 25, now - lastTopChange >= 5 else { return }
+        let sorted = levelHistory.map(\.db).sorted()
+        let level = sorted[Int(Double(sorted.count - 1) * 0.9)]
+        let target = ceil((level + 3) / 5) * 5
+        if target > params.dbTop || target < params.dbTop - 10 {
+            params.dbTop = target
+            lastTopChange = now
+        }
+    }
+
     private func apply(_ s: ProcessorSnapshot) {
         if s.generation != generation {
             generation = s.generation
             resetRTI(width: s.derived.nfft / 2)
+            levelHistory.removeAll()
         }
+        updateAutoTop(rows: s.newRows)
         if !s.newRows.isEmpty {
             var added = false
             for row in s.newRows where rti.append(row, top: params.dbTop, range: params.dbRange) { added = true }
@@ -302,6 +331,9 @@ final class RadarModel: ObservableObject {
         if pgaUpdates != s.pgaUpdates { pgaUpdates = s.pgaUpdates }
         if pgaAccepted != s.pgaAccepted { pgaAccepted = s.pgaAccepted }
         pgaAgreement = s.pgaAgreement
+        pencilTargets = s.pencilTargets
+        pencilOrder = s.pencilOrder
+        pencilMs = s.pencilMs
         if pulseCount != s.pulseCount { pulseCount = s.pulseCount }
 
         var st = stats

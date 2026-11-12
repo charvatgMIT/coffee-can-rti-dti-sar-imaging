@@ -17,6 +17,26 @@ enum WindowType: String, CaseIterable, Identifiable, Codable {
     var id: String { rawValue }
 }
 
+enum RangeMethod: String, CaseIterable, Identifiable, Codable {
+    case fft = "FFT"
+    case matrixPencil = "Matrix pencil"
+    var id: String { rawValue }
+}
+
+/// How the matrix pencil chooses its model order (number of scattering centres).
+enum PencilOrderRule: String, CaseIterable, Identifiable, Codable {
+    case ester = "ESTER (adaptive)"
+    case gap = "Largest singular-value gap (adaptive)"
+    case threshold = "Singular-value threshold"
+    var id: String { rawValue }
+}
+
+enum PencilDisplay: String, CaseIterable, Identifiable, Codable {
+    case pseudospectrum = "Pseudospectrum"
+    case amplitudeWeighted = "Amplitude-weighted lines"
+    var id: String { rawValue }
+}
+
 /// User-adjustable settings. Defaults follow read_data_RTI.m.
 struct RadarParams: Equatable, Codable {
     var tpMs: Double = 20            // up-ramp (pulse) time
@@ -34,6 +54,16 @@ struct RadarParams: Equatable, Codable {
     var window: WindowType = .rect
     var taylorNbar = 4                  // Taylor window: number of nearly constant-level sidelobes
     var taylorSidelobeDB: Double = 30   // Taylor window: peak sidelobe level below the mainlobe (dB)
+    var rangeMethod: RangeMethod = .fft
+    var pencilDisplay: PencilDisplay = .pseudospectrum
+    var pencilOrderRule: PencilOrderRule = .ester
+    var esterThreshold: Double = 0.3   // ESTER: keep the largest order whose 1/E^2 is at least this fraction of the best
+    var autoTop = false              // keep the plot's top dB just above the strongest return
+    var pencilForwardBackward = true // forward-backward averaging in the matrix pencil
+    var pencilMaxTargets = 8         // model order cap (targets; a real pulse needs two poles each)
+    var pencilThresholdDB: Double = 40   // singular values further below the largest are noise
+    var pencilL = 0                  // pencil parameter L, 0 = N/3
+    var pencilPeakWidth: Double = 1  // pseudospectrum peak half-width (FFT bins)
     var svaEnabled = false           // spatially variant apodization in range (replaces the window)
     var zeroPad = 4                  // zpad = 8*N/2 = 4N
     var traceAveraging = 1

@@ -12,8 +12,12 @@ struct ContentView: View {
             VStack(spacing: 10) {
                 StatsBar()
                 RangeSlider()
-                PlotCard(title: "Range profile: FFT of IF channel (dBFS vs. range)\(model.params.pgaEnabled ? " · PGA on" : "")",
-                         detail: "N=\(model.derived.n), FFT \(model.derived.nfft), \(String(format: "%.3f", model.derived.metersPerBin * model.params.rangeUnit.perMeter)) \(model.params.rangeUnit.abbreviation)/bin") {
+                PlotCard(title: model.params.rangeMethod == .matrixPencil
+                            ? "Range profile: matrix pencil \(model.params.pencilDisplay.rawValue.lowercased()) (dB vs. range)\(model.params.pgaEnabled ? " · PGA on" : "") · ▼ = estimated targets"
+                            : "Range profile: FFT of IF channel (dBFS vs. range)\(model.params.pgaEnabled ? " · PGA on" : "")",
+                         detail: model.params.rangeMethod == .matrixPencil
+                            ? "N=\(model.derived.n), model order \(model.pencilOrder.map(String.init) ?? "–"), \(model.pencilTargets.count) targets, \(String(format: "%.1f", model.pencilMs ?? 0)) ms/pulse"
+                            : "N=\(model.derived.n), FFT \(model.derived.nfft), \(String(format: "%.3f", model.derived.metersPerBin * model.params.rangeUnit.perMeter)) \(model.params.rangeUnit.abbreviation)/bin") {
                     FFTPlot()
                 }
                 .frame(minHeight: 220)
@@ -202,6 +206,33 @@ struct SettingsSidebar: View {
                 Text("The rising edge is upsampled with a windowed-sinc interpolator, then refined linearly between the upsampled points. With alignment on, each IF pulse is resampled to start exactly at the interpolated edge.")
                     .font(.caption).foregroundStyle(.secondary)
             }
+            Section("Range estimator") {
+                Picker("Method", selection: $model.params.rangeMethod) {
+                    ForEach(RangeMethod.allCases) { Text($0.rawValue).tag($0) }
+                }
+                if model.params.rangeMethod == .matrixPencil {
+                    Picker("Display", selection: $model.params.pencilDisplay) {
+                        ForEach(PencilDisplay.allCases) { Text($0.rawValue).tag($0) }
+                    }
+                    Picker("Model order", selection: $model.params.pencilOrderRule) {
+                        ForEach(PencilOrderRule.allCases) { Text($0.rawValue).tag($0) }
+                    }
+                    Toggle("Forward–backward averaging", isOn: $model.params.pencilForwardBackward)
+                    IntRow(title: model.params.pencilOrderRule == .threshold ? "Max targets" : "Max targets (cap)", value: $model.params.pencilMaxTargets)
+                    switch model.params.pencilOrderRule {
+                    case .ester:
+                        NumberRow(title: "ESTER threshold (0–1, higher = fewer)", value: $model.params.esterThreshold)
+                    case .threshold:
+                        NumberRow(title: "Signal threshold (dB below largest σ)", value: $model.params.pencilThresholdDB)
+                    case .gap:
+                        EmptyView()
+                    }
+                    IntRow(title: "Pencil parameter L (0 = N/3)", value: $model.params.pencilL)
+                    NumberRow(title: "Peak half-width (FFT bins)", value: $model.params.pencilPeakWidth)
+                    Text("Fits each pulse as a sum of complex exponentials (Hua & Sarkar TLS matrix pencil), two per target for the real IF (one with PGA on). The model order is chosen every pulse: ESTER keeps the largest order whose signal subspace is still shift-invariant (robust to coloured noise and clutter); the gap rule cuts at the biggest drop in singular values; the threshold rule counts singular values within a fixed dB of the largest. Forward–backward averaging adds the time-reversed, conjugated pulse to the data matrix, which decorrelates coherent returns such as multipath and reduces noise. The pseudospectrum is 1/σmin(E − zI) around the unit circle, scaled so its peaks sit at the strongest target's power; amplitude-weighted lines put a peak of each target's fitted power at its range. ▼ marks each estimated target. The window and SVA settings don't apply.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
             Section("Processing") {
                 Picker("Background", selection: $model.params.background) {
                     ForEach(Background.allCases) { Text($0.rawValue).tag($0) }
@@ -247,6 +278,7 @@ struct SettingsSidebar: View {
                 }
                 NumberRow(title: "Max range shown (\(model.params.rangeUnit.abbreviation), 0 = all)", value: model.inDisplayUnits(\.maxRangeShown))
                 NumberRow(title: "Top (dB)", value: $model.params.dbTop)
+                Toggle("Track top automatically", isOn: $model.params.autoTop)
                 NumberRow(title: "Dynamic range (dB)", value: $model.params.dbRange)
                 Picker("RTI history", selection: $model.params.rtiSeconds) {
                     ForEach([10.0, 30, 60, 120, 300], id: \.self) { Text("\(Int($0)) s").tag($0) }

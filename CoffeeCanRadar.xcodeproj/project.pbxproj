@@ -188,6 +188,7 @@
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = org.coffeecanradar.CoffeeCanRadar;
 				PRODUCT_NAME = CoffeeCanRadarRTI;
+				OTHER_SWIFT_FLAGS = "-Xcc -DACCELERATE_NEW_LAPACK";
 				SWIFT_VERSION = 5.0;
 			};
 			name = Debug;
@@ -211,6 +212,7 @@
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = org.coffeecanradar.CoffeeCanRadar;
 				PRODUCT_NAME = CoffeeCanRadarRTI;
+				OTHER_SWIFT_FLAGS = "-Xcc -DACCELERATE_NEW_LAPACK";
 				SWIFT_VERSION = 5.0;
 			};
 			name = Release;

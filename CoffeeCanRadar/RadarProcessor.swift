@@ -67,6 +67,10 @@ struct ProcessorSnapshot {
     var pgaAccepted = 0
     var pgaAgreement: Double?
     var pgaResidualRMS: Double?
+    /// Matrix pencil targets (range in metres, power in dBFS) and model order, when in use.
+    var pencilTargets: [(range: Double, db: Double)] = []
+    var pencilOrder: Int?
+    var pencilMs: Double?
 }
 
 /// Triggers on the sync channel (left by default), extracts IF pulses from the other
@@ -117,6 +121,10 @@ final class RadarProcessor {
     private var pga: RangePGA?
     private var cplxRe: [Double] = []
     private var cplxIm: [Double] = []
+    private var pencil: MatrixPencil?
+    private var pencilTargets: [(range: Double, db: Double)] = []
+    private var pencilOrder: Int?
+    private var pencilMs: Double?
 
     init() {
         d = Derived(RadarParams(), fs: 48000)
@@ -149,7 +157,8 @@ final class RadarProcessor {
         if newFs != old.fs || p.syncOnRight != old.params.syncOnRight || d.n != old.d.n || d.nfft != old.d.nfft
             || p.window != old.params.window || p.taylorNbar != old.params.taylorNbar
             || p.taylorSidelobeDB != old.params.taylorSidelobeDB || p.pgaEnabled != old.params.pgaEnabled
-            || p.svaEnabled != old.params.svaEnabled {
+            || p.svaEnabled != old.params.svaEnabled || p.rangeMethod != old.params.rangeMethod
+            || p.pencilL != old.params.pencilL || p.pencilDisplay != old.params.pencilDisplay {
             resetProcessing()
         } else if p.background != old.params.background {
             meanPulse = []; nMean = 0; prevPulse = nil
@@ -197,6 +206,7 @@ final class RadarProcessor {
         window = params.svaEnabled ? [Double](repeating: 1, count: d.n) : makeWindow(params, n: d.n)
         windowScale = 2 / window.reduce(0, +)     // sine of amplitude 1 -> 0 dBFS
         pga = nil
+        pencil = nil; pencilTargets = []; pencilOrder = nil
         cplxRe = [Double](repeating: 0, count: d.nfft)
         cplxIm = [Double](repeating: 0, count: d.nfft)
         if fftSetup == nil || fftLog2n != d.log2n {
@@ -351,6 +361,11 @@ final class RadarProcessor {
             p.add(a, blockSize: max(4, params.pgaPulses), iterations: params.pgaIterations, bins: lo...hi,
                   minAgreement: params.pgaMinAgreement)
             p.correct(&a)
+            if params.rangeMethod == .matrixPencil {
+                pencilProfile(re: a.re, im: a.im, real: false, into: &pow)
+                accumulate(pow)
+                return
+            }
             if params.svaEnabled {
                 let y = svaSpectrum(setup: setup, re: a.re, im: a.im, n: n, log2n: d.log2n)
                 let s2 = windowScale * windowScale / 4
@@ -366,6 +381,12 @@ final class RadarProcessor {
             // analytic sine of amplitude A peaks at A * sum(w): same 0 dBFS reference as below
             let s2 = windowScale * windowScale / 4
             for k in 0..<nb { pow[k] = (cplxRe[k] * cplxRe[k] + cplxIm[k] * cplxIm[k]) * s2 }
+            accumulate(pow)
+            return
+        }
+
+        if params.rangeMethod == .matrixPencil {
+            pencilProfile(re: x, im: [Double](repeating: 0, count: n), real: true, into: &pow)
             accumulate(pow)
             return
         }
@@ -397,6 +418,54 @@ final class RadarProcessor {
         pow[0] = splitRe[0] * splitRe[0] * s2
         for k in 1..<nb { pow[k] = (splitRe[k] * splitRe[k] + splitIm[k] * splitIm[k]) * s2 }
         accumulate(pow)
+    }
+
+    /// Matrix pencil range profile for one pulse: pseudospectrum or amplitude-weighted lines
+    /// on the FFT range grid, scaled to dBFS like the FFT.
+    private func pencilProfile(re: [Double], im: [Double], real: Bool, into pow: inout [Double]) {
+        let n = d.n, nfft = d.nfft
+        let lp = params.pencilL > 0 ? params.pencilL : n / 3
+        if pencil == nil || pencil!.n != n || pencil!.l != max(2, min(lp, n - 2)) { pencil = MatrixPencil(n: n, pencil: lp) }
+        let t0 = DispatchTime.now().uptimeNanoseconds
+        let targets = max(1, params.pencilMaxTargets)
+        guard let r = pencil!.analyze(re: re, im: im, maxOrder: real ? 2 * targets : targets,
+                                      thresholdDB: params.pencilThresholdDB, rule: params.pencilOrderRule,
+                                      pairs: real, esterThreshold: params.esterThreshold,
+                                      forwardBackward: params.pencilForwardBackward) else {
+            for k in pow.indices { pow[k] = 0 }
+            return
+        }
+        // A real sine of amplitude A is a conjugate pair of amplitude A/2: power 4|a|^2 = A^2.
+        let scale = real ? 4.0 : 1.0
+        var found: [(range: Double, db: Double, k: Int)] = []
+        for k in 0..<r.order {
+            let ang = r.poles[k].arg
+            guard ang > 0 else { continue }
+            let range = ang / (2 * .pi) * Double(nfft) * d.metersPerBin
+            found.append((range, 10 * log10(r.power[k] * scale + 1e-20), k))
+        }
+        let eps = 2 * Double.pi / Double(nfft) * max(0.1, params.pencilPeakWidth)
+        let eps2 = eps * eps
+        let omegas = (0..<pow.count).map { 2 * Double.pi * Double($0) / Double(nfft) }
+        switch params.pencilDisplay {
+        case .pseudospectrum:
+            let top = (found.map { r.power[$0.k] }.max() ?? 0) * scale
+            let s2 = MatrixPencil.sigmaMin2(schur: r.schur, order: r.order, omegas: omegas)
+            for k in pow.indices { pow[k] = top * eps2 / (s2[k] + eps2) }
+        case .amplitudeWeighted:
+            for k in pow.indices { pow[k] = 0 }
+            for f in found {
+                let p = r.poles[f.k], u = Cx(p.re / p.mag, p.im / p.mag), pk = r.power[f.k] * scale
+                for b in pow.indices {
+                    let dz = Cx(cos(omegas[b]), sin(omegas[b])) - u
+                    pow[b] += pk * eps2 / (dz.abs2 + eps2)
+                }
+            }
+        }
+        pencilTargets = found.map { ($0.range, $0.db) }
+        pencilOrder = r.order
+        let ms = Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e6
+        pencilMs = pencilMs.map { 0.9 * $0 + 0.1 * ms } ?? ms
     }
 
     /// Trace averaging, peak hold and RTI rows for one pulse's power spectrum.
@@ -450,6 +519,11 @@ final class RadarProcessor {
         peakL = 0; peakR = 0
         s.squarenessTrigger = squareness?.trigger
         s.squarenessIF = squareness?.ifc
+        if params.rangeMethod == .matrixPencil {
+            s.pencilTargets = pencilTargets
+            s.pencilOrder = pencilOrder
+            s.pencilMs = pencilMs
+        }
         if params.pgaEnabled, let p = pga {
             s.pgaPhase = p.phase?.map { Float($0) }
             s.pgaUpdates = p.updates

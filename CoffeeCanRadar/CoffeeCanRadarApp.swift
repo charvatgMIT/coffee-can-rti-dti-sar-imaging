@@ -175,6 +175,56 @@ enum CommandLineTools {
                          pass ? "PASS" : "FAIL", psl, pslRect, wSVA, wRect, weak))
         }
 
+        // 3c. Matrix pencil: two equal targets half a range-resolution cell apart (the FFT
+        //     cannot separate them) plus a third 20 dB weaker, in light noise, on a real pulse.
+        do {
+            let n = 480
+            var p = RadarParams(); p.tpMs = 10
+            let d = Derived(p, fs: 48000)
+            let cells = [60.0, 60.5, 75.2], amps = [0.5, 0.5, 0.05]   // cycles per pulse
+            var rng = SystemRandomNumberGenerator()
+            let x = (0..<n).map { t -> Double in
+                var v = 0.0
+                for (f, a) in zip(cells, amps) { v += a * sin(2 * Double.pi * f * Double(t) / Double(n) + f) }
+                return v + 1e-4 * Double.random(in: -1...1, using: &rng)
+            }
+            let mp = MatrixPencil(n: n, pencil: n / 3)
+            let t0 = DispatchTime.now().uptimeNanoseconds
+            let r = mp.analyze(re: x, im: [Double](repeating: 0, count: n), maxOrder: 16, thresholdDB: 40)
+            let ms = Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e6
+            var found: [(f: Double, db: Double)] = []
+            if let r { for k in 0..<r.order where r.poles[k].arg > 0 { found.append((r.poles[k].arg / (2 * .pi) * Double(n), 10 * log10(4 * r.power[k]))) } }
+            found.sort { $0.f < $1.f }
+            var pass = found.count == 3
+            if pass {
+                for (i, f) in found.enumerated() {
+                    pass = pass && abs(f.f - cells[i]) < 0.02 && abs(f.db - 20 * log10(amps[i])) < 0.5
+                }
+            }
+            if let r {
+                let om = (0..<1024).map { 2 * Double.pi * Double($0) / Double(d.nfft) }
+                let s2 = MatrixPencil.sigmaMin2(schur: r.schur, order: r.order, omegas: om)
+                let kA = Int((60.0 / Double(n) * Double(d.nfft)).rounded()), kB = Int((60.5 / Double(n) * Double(d.nfft)).rounded())
+                let dip = s2[(kA + kB) / 2] > 10 * max(s2[kA], s2[kB])    // resolved: valley between the peaks
+                pass = pass && dip
+            }
+            let re = mp.analyze(re: x, im: [Double](repeating: 0, count: n), maxOrder: 16, thresholdDB: 40, rule: .ester, pairs: true)
+            let rg = mp.analyze(re: x, im: [Double](repeating: 0, count: n), maxOrder: 16, thresholdDB: 40, rule: .gap, pairs: true)
+            let rf = mp.analyze(re: x, im: [Double](repeating: 0, count: n), maxOrder: 16, thresholdDB: 40, rule: .ester, pairs: true, forwardBackward: true)
+            var fbFound: [Double] = []
+            if let rf { for k in 0..<rf.order where rf.poles[k].arg > 0 { fbFound.append(rf.poles[k].arg / (2 * .pi) * Double(n)) } }
+            fbFound.sort()
+            let fbPass = rf?.order == 6 && fbFound.count == 3 && zip(fbFound, cells).allSatisfy { abs($0 - $1) < 0.02 }
+            print(String(format: "%@ forward-backward pencil: order %d, %@ cells", fbPass ? "PASS" : "FAIL", rf?.order ?? 0,
+                         fbFound.map { String(format: "%.3f", $0) }.joined(separator: "/")))
+            ok = ok && fbPass
+            let orderPass = re?.order == 6 && rg?.order == 6
+            print(String(format: "%@ adaptive model order: ESTER %d, gap %d (expect 6 = 3 targets)", orderPass ? "PASS" : "FAIL", re?.order ?? 0, rg?.order ?? 0))
+            ok = ok && pass && orderPass
+            print(String(format: "%@ matrix pencil: %@ (expect 60.00/60.50/75.20 cells at -6.0/-6.0/-26.0 dBFS), order %d, %.1f ms",
+                         pass ? "PASS" : "FAIL", found.map { String(format: "%.3f@%.1f", $0.f, $0.db) }.joined(separator: " "), r?.order ?? 0, ms))
+        }
+
         // 4. Range PGA: a target smeared by a known sweep phase error.
         do {
             func run(pga: Bool) -> (peak: Double, phase: [Float]?, n: Int) {

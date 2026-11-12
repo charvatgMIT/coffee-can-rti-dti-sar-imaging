@@ -17,6 +17,11 @@ waterfall. The processing follows `read_data_RTI.m` from the MIT IAP radar cours
 - Rectangular, Hann, Blackman or Taylor window before the FFT, or spatially variant
   apodization (SVA), which picks the weighting per range bin for rectangular-window
   resolution with low sidelobes.
+- Matrix pencil super-resolution in range (TLS, Hua & Sarkar) as an alternative to the FFT:
+  shows the pencil pseudospectrum or amplitude-weighted lines, with each estimated target
+  marked. The model order (number of scattering centres) is chosen every pulse by ESTER, the
+  largest singular-value gap, or a fixed threshold, with optional forward-backward averaging.
+- Automatic display top that follows the strongest returns without flicker.
 - Range phase gradient autofocus (PGA) to remove sweep nonlinearity, with a plot of the
   estimated phase error.
 - VCO band presets from the Mini-Circuits ZX95-2536C+ datasheet (full 0–5 V range, ISM band,

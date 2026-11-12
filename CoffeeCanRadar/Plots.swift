@@ -92,6 +92,14 @@ struct FFTPlot: View {
             }
             if let hold { c.stroke(line(hold), with: .color(.gray), lineWidth: 1) }
             if let trace { c.stroke(line(trace), with: .color(.accentColor), lineWidth: 1.4) }
+            if p.rangeMethod == .matrixPencil {
+                for t in model.pencilTargets where t.range <= d.rShow {
+                    let x = ax.px(t.range * uf), y = ax.py(min(top, max(bottom, t.db)))
+                    var tri = Path()
+                    tri.move(to: CGPoint(x: x, y: y - 1)); tri.addLine(to: CGPoint(x: x - 4, y: y - 8)); tri.addLine(to: CGPoint(x: x + 4, y: y - 8)); tri.closeSubpath()
+                    c.fill(tri, with: .color(.red))
+                }
+            }
             if let r = st.peakRange, let db = st.peakDB {
                 let pt = CGPoint(x: ax.px(r * uf), y: ax.py(min(top, max(bottom, db))))
                 c.fill(Path(ellipseIn: CGRect(x: pt.x - 4, y: pt.y - 4, width: 8, height: 8)), with: .color(.orange))
