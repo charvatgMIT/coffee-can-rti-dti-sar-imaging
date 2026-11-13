@@ -31,6 +31,15 @@ enum PencilOrderRule: String, CaseIterable, Identifiable, Codable {
     var id: String { rawValue }
 }
 
+/// Range-Doppler map estimator.
+enum RDSuperRes: String, CaseIterable, Identifiable, Codable {
+    case off = "FFT"
+    case doppler = "Matrix pencil in Doppler"
+    case range = "Matrix pencil in range"
+    case both = "Matrix pencil in range and Doppler"
+    var id: String { rawValue }
+}
+
 enum PencilDisplay: String, CaseIterable, Identifiable, Codable {
     case pseudospectrum = "Pseudospectrum"
     case amplitudeWeighted = "Amplitude-weighted lines"
@@ -39,7 +48,7 @@ enum PencilDisplay: String, CaseIterable, Identifiable, Codable {
 
 /// User-adjustable settings. Defaults follow read_data_RTI.m.
 struct RadarParams: Equatable, Codable {
-    var tpMs: Double = 20            // up-ramp (pulse) time
+    var tpMs: Double = 5             // up-ramp (pulse) time
     var band: Band = .full
     var fStartMHz: Double = VCO.minMHz
     var fStopMHz: Double = VCO.maxMHz
@@ -70,14 +79,23 @@ struct RadarParams: Equatable, Codable {
     var peakHold = false
     var dbTop: Double = -10
     var dbRange: Double = 80
+    var rtiDbRange: Double = 80      // waterfall colour range (dB below the top)
     var maxRangeShown: Double = 0    // 0 = full range
     var rtiSeconds: Double = 30      // RTI history length
+    var rtiViewSeconds: Double = 0   // waterfall time span shown (0 = the whole history)
     var rangeUnit: RangeUnit = .feet // display only; processing is in metres
     var pgaEnabled = false           // range (fast-time) phase gradient autofocus
     var pgaPulses = 64               // pulses per PGA estimate
     var pgaIterations = 8
     var pgaMinRange: Double = 1.0    // ignore returns closer than this (DC / feed-through)
     var pgaMinAgreement: Double = 0.8   // reject estimates whose two half-block estimates correlate less than this
+    var rdEnabled = true             // range-Doppler map
+    var rdPulses = 64                // pulses per Doppler FFT (coherent processing interval)
+    var rdWindow: WindowType = .hann // slow-time (Doppler) window
+    var rdDbRange: Double = 40       // range-Doppler colour range (dB below the top)
+    var rdRangePGA = true            // range-Doppler: fast-time (range) PGA correction
+    var rdDopplerPGA = true          // range-Doppler: slow-time (Doppler) PGA correction
+    var rdSuperRes: RDSuperRes = .both   // range-Doppler: FFT or matrix pencil super-resolution
 }
 
 /// Quantities that follow from the settings and the sample rate.
@@ -141,6 +159,11 @@ func taylorWindow(n: Int, nbar: Int, sidelobeDB: Double) -> [Double] {
         let xi = (Double(k) - 0.5 * Double(n) + 0.5) / Double(n)
         return 1 + 2 * zip(mi, fm).reduce(0.0) { $0 + $1.1 * cos(2 * Double.pi * Double($1.0) * xi) }
     }
+}
+
+/// Centre-frequency wavelength (m), for converting Doppler to velocity.
+func wavelength(_ p: RadarParams) -> Double {
+    speedOfLight / max(1, (p.fStartMHz + p.fStopMHz) / 2 * 1e6)
 }
 
 /// Units for showing range. All processing stays in metres.

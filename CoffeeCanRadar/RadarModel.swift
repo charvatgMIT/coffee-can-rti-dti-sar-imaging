@@ -66,6 +66,8 @@ final class RadarModel: ObservableObject {
     @Published private(set) var pencilTargets: [(range: Double, db: Double)] = []
     @Published private(set) var pencilOrder: Int?
     @Published private(set) var pencilMs: Double?
+    @Published private(set) var rangeDoppler: RangeDopplerSnapshot?
+    @Published private(set) var rdCollected = 0
 
     let rti = RTIBuffer()
     private let queue = DispatchQueue(label: "org.coffeecanradar.CoffeeCanRadar.dsp", qos: .userInteractive)
@@ -76,6 +78,7 @@ final class RadarModel: ObservableObject {
     private var fs: Double = 48000
     private var generation = -1
     private var userPicked = false
+    private let backlog = AudioBacklog()
 
     init() {
         derived = Derived(params, fs: fs)
@@ -85,6 +88,9 @@ final class RadarModel: ObservableObject {
         timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30, repeats: true) { [weak self] _ in self?.poll() }
         if CommandLine.arguments.contains("--simulate") {
             DispatchQueue.main.async { self.startSimulation() }
+        }
+        if CommandLine.arguments.contains("--live") {
+            DispatchQueue.main.async { self.startLive() }
         }
         SnapshotTool.scheduleIfRequested(model: self)
     }
@@ -121,8 +127,20 @@ final class RadarModel: ObservableObject {
             do {
                 try self.input.prepare(deviceID: dev.id)
                 self.begin(fs: self.input.sampleRate)
-                let proc = self.processor, q = self.queue
-                self.input.onSamples = { l, r in q.async { proc.push(l, r) } }
+                let proc = self.processor, q = self.queue, backlog = self.backlog
+                backlog.reset()
+                // At most 0.5 s of audio may wait for processing; beyond that blocks are dropped so
+                // the display can never lag further behind real time.
+                let limit = Int(self.input.sampleRate / 2)
+                self.input.onSamples = { l, r in
+                    let n = l.count
+                    guard let resync = backlog.tryAdd(n, limit: limit) else { return }
+                    q.async {
+                        if resync { proc.discontinuity() }
+                        proc.push(l, r)
+                        backlog.remove(n)
+                    }
+                }
                 try self.input.start()
                 self.source = .live
                 if self.input.deviceChannels < 2 {
@@ -167,6 +185,7 @@ final class RadarModel: ObservableObject {
         paused = false
         stats = LiveStats()
         suggestion = nil
+        droppedSeconds = 0
     }
 
     private func requestMicrophone(_ done: @escaping (Bool) -> Void) {
@@ -237,8 +256,11 @@ final class RadarModel: ObservableObject {
         queue.async { proc.update(params: p, fs: f) }
         if params.rtiSeconds != old.rtiSeconds {
             resetRTI(width: rti.width)
-        } else if params.dbTop != old.dbTop || params.dbRange != old.dbRange {
-            rti.recolor(top: params.dbTop, range: params.dbRange)
+        } else if params.rtiViewSeconds != old.rtiViewSeconds {
+            rti.setView(pulses: rtiViewPulses, top: params.dbTop, range: params.rtiDbRange)
+            rtiImage = rti.makeImage()
+        } else if params.dbTop != old.dbTop || params.rtiDbRange != old.rtiDbRange {
+            rti.recolor(top: params.dbTop, range: params.rtiDbRange)
             rtiImage = rti.makeImage()
         }
     }
@@ -248,8 +270,19 @@ final class RadarModel: ObservableObject {
         Int((params.rtiSeconds * 1000 / (2 * params.tpMs)).rounded())
     }
 
+    /// The waterfall time span shown, in seconds.
+    var rtiViewSecondsShown: Double {
+        params.rtiViewSeconds > 0 ? min(params.rtiViewSeconds, params.rtiSeconds) : params.rtiSeconds
+    }
+
+    /// Pulses in the displayed part of the waterfall (the time-span slider).
+    private var rtiViewPulses: Int {
+        let secs = params.rtiViewSeconds > 0 ? min(params.rtiViewSeconds, params.rtiSeconds) : params.rtiSeconds
+        return Int((secs * 1000 / (2 * params.tpMs)).rounded())
+    }
+
     private func resetRTI(width: Int) {
-        rti.reset(width: width, pulses: rtiPulses, top: params.dbTop, range: params.dbRange)
+        rti.reset(width: width, pulses: rtiPulses, viewPulses: rtiViewPulses, top: params.dbTop, range: params.rtiDbRange)
         rtiImage = rti.makeImage()
     }
 
@@ -285,6 +318,8 @@ final class RadarModel: ObservableObject {
         }
     }
 
+    private var droppedSeconds = 0.0
+
     // automatic top: per-pulse peak levels over the last few seconds, and when the top last moved
     private var levelHistory: [(time: Double, db: Double)] = []
     private var lastTopChange = 0.0
@@ -310,15 +345,21 @@ final class RadarModel: ObservableObject {
     }
 
     private func apply(_ s: ProcessorSnapshot) {
+        let dropped = backlog.takeDropped()
+        if dropped > 0 && source == .live {
+            droppedSeconds += Double(dropped) / fs
+            setStatus(String(format: "Processing can't keep up with real time: %.1f s of audio skipped so far. Try fewer options (matrix pencil, SVA, PGA), or run the Release build.", droppedSeconds), error: true)
+        }
         if s.generation != generation {
             generation = s.generation
             resetRTI(width: s.derived.nfft / 2)
             levelHistory.removeAll()
+            rangeDoppler = nil
         }
         updateAutoTop(rows: s.newRows)
         if !s.newRows.isEmpty {
             var added = false
-            for row in s.newRows where rti.append(row, top: params.dbTop, range: params.dbRange) { added = true }
+            for row in s.newRows where rti.append(row, top: params.dbTop, range: params.rtiDbRange) { added = true }
             if added { rtiImage = rti.makeImage() }
         }
         if source == .none && s.newRows.isEmpty && s.scope == nil { return }
@@ -335,6 +376,8 @@ final class RadarModel: ObservableObject {
         pencilOrder = s.pencilOrder
         pencilMs = s.pencilMs
         if pulseCount != s.pulseCount { pulseCount = s.pulseCount }
+        if let rd = s.rangeDoppler { rangeDoppler = rd }
+        if rdCollected != s.rdCollected { rdCollected = s.rdCollected }
 
         var st = stats
         st.pulseRateHz = s.pulseRateHz ?? st.pulseRateHz
@@ -390,6 +433,12 @@ final class RTIBuffer {
     private(set) var pulsesPerRow = 1
     private(set) var width = 0
     private(set) var rows = 0
+    // every pulse of the history, newest at rawNewest
+    private var raw: [Float] = []
+    private var rawCap = 0
+    private var rawNewest = 0
+    private var rawCount = 0
+    // the displayed window: rows combining pulsesPerRow pulses
     private var db: [Float] = []
     private var rgba: [UInt8] = []
     private var newest = 0
@@ -402,25 +451,55 @@ final class RTIBuffer {
         return [c(3), c(2), c(1), 255]
     }
 
-    /// Sizes the buffer to hold `pulses` pulses of history.
-    func reset(width: Int, pulses: Int, top: Double, range: Double) {
-        let total = max(10, pulses)
+    /// Sizes the buffer to keep `pulses` pulses of history and show the newest `viewPulses`.
+    func reset(width: Int, pulses: Int, viewPulses: Int, top: Double, range: Double) {
+        self.width = width
+        rawCap = max(10, pulses)
+        raw = [Float](repeating: -400, count: width * rawCap)
+        rawNewest = 0
+        rawCount = 0
+        configureView(viewPulses)
+        recolor(top: top, range: range)
+    }
+
+    /// Shows the newest `pulses` pulses of the history, rebuilt from the stored pulses.
+    func setView(pulses: Int, top: Double, range: Double) {
+        configureView(pulses)
+        let ppr = pulsesPerRow
+        for r in 0..<height {
+            let first = r * ppr
+            guard first < rawCount else { break }
+            let base = r * width
+            for i in first..<min(first + ppr, rawCount) {
+                let src = ((rawNewest + i) % rawCap) * width
+                for k in 0..<width where raw[src + k] > db[base + k] { db[base + k] = raw[src + k] }
+            }
+            rows = r + 1
+        }
+        recolor(top: top, range: range)
+    }
+
+    private func configureView(_ pulses: Int) {
+        let total = max(10, min(pulses, rawCap))
         pulsesPerRow = max(1, Int((Double(total) / Double(RTIBuffer.maxRows)).rounded(.up)))
         height = max(10, total / pulsesPerRow)
-        self.width = width
         rows = 0
         newest = 0
         pending = []
         pendingCount = 0
         db = [Float](repeating: -400, count: width * height)
         rgba = [UInt8](repeating: 0, count: width * height * 4)
-        recolor(top: top, range: range)
     }
 
     /// Adds one pulse; returns true when a new image row was completed.
     @discardableResult
     func append(_ row: [Float], top: Double, range: Double) -> Bool {
         guard row.count == width, width > 0 else { return false }
+        rawNewest = (rawNewest - 1 + rawCap) % rawCap
+        let rb = rawNewest * width
+        for k in 0..<width { raw[rb + k] = row[k] }
+        rawCount = min(rawCount + 1, rawCap)
+
         if pendingCount == 0 {
             pending = row
         } else {
@@ -475,4 +554,28 @@ final class RTIBuffer {
                        bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipLast.rawValue),
                        provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent)
     }
+}
+
+/// Counts audio frames waiting on the DSP queue (audio thread adds, DSP queue removes).
+final class AudioBacklog {
+    private let lock = NSLock()
+    private var frames = 0
+    private var dropped = 0
+    private var resync = false
+
+    func reset() { lock.lock(); frames = 0; dropped = 0; resync = false; lock.unlock() }
+
+    /// nil = drop this block; otherwise whether the processor must re-acquire the trigger first.
+    func tryAdd(_ n: Int, limit: Int) -> Bool? {
+        lock.lock(); defer { lock.unlock() }
+        if frames + n > limit { dropped += n; resync = true; return nil }
+        frames += n
+        let r = resync
+        resync = false
+        return r
+    }
+
+    func remove(_ n: Int) { lock.lock(); frames -= n; lock.unlock() }
+
+    func takeDropped() -> Int { lock.lock(); defer { lock.unlock() }; let d = dropped; dropped = 0; return d }
 }

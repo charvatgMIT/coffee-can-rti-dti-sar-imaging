@@ -271,6 +271,85 @@ enum CommandLineTools {
             print(String(format: "%@ PGA: phase estimate error %.3f rad rms (true error %.2f rad rms)",
                          phasePass ? "PASS" : "FAIL", err, rms(truth)))
         }
+        // 6. Slow-time (Doppler) PGA: three scatterers (two moving, one stationary) share a smooth
+        //    phase error plus pulse-to-pulse jitter; the estimate should match it and the
+        //    moving target should keep its Doppler cell.
+        do {
+            let m = 64, nr = 20, log2m = 6
+            let setup = vDSP_create_fftsetupD(vDSP_Length(log2m), FFTRadix(kFFTRadix2))!
+            defer { vDSP_destroy_fftsetupD(setup) }
+            var rng = SystemRandomNumberGenerator()
+            var truth = (0..<m).map { j -> Double in
+                let t = Double(j) / Double(m)
+                return 1.5 * sin(2 * .pi * 1.3 * t + 0.4) + 0.8 * cos(2 * .pi * 3.1 * t) + 0.2 * Double.random(in: -1...1, using: &rng)
+            }
+            removeLinearTrend(&truth)
+            let targets: [(bin: Int, q: Double, a: Double)] = [(5, 7.0, 1), (12, -3.0, 0.5), (15, 0, 0.7)]
+            var re = [Double](repeating: 0, count: m * nr), im = re
+            for kb in 0..<nr {
+                for j in 0..<m {
+                    var vr = 0.01 * Double.random(in: -1...1, using: &rng), vi = 0.01 * Double.random(in: -1...1, using: &rng)
+                    for t in targets where t.bin == kb {
+                        let ph = 2 * .pi * t.q * Double(j) / Double(m) + truth[j] + Double(kb)
+                        vr += t.a * cos(ph); vi += t.a * sin(ph)
+                    }
+                    re[kb * m + j] = vr; im[kb * m + j] = vi
+                }
+            }
+            func peakFraction(_ re: [Double], _ im: [Double], bin: Int) -> (frac: Double, q: Int) {
+                var r = Array(re[(bin * m)..<(bin * m + m)]), i = Array(im[(bin * m)..<(bin * m + m)])
+                fftInPlace(setup, &r, &i, log2n: log2m)
+                let p = zip(r, i).map { $0 * $0 + $1 * $1 }
+                let k = p.indices.max { p[$0] < p[$1] }!
+                return (p[k] / p.reduce(0, +), k)
+            }
+            let before = peakFraction(re, im, bin: 5)
+            var est = RadarProcessor.slowTimePGA(setup: setup, re: &re, im: &im, m: m, log2m: log2m, bins: 1..<nr, iterations: 8)
+            removeLinearTrend(&est)
+            let after = peakFraction(re, im, bin: 5)
+            let err = rms(zip(est, truth).map { $0 - $1 })
+            let pass = err < 0.1 * rms(truth) && after.frac > 0.9 && after.q == 7
+            ok = ok && pass
+            print(String(format: "%@ Doppler PGA: phase error %.3f rad rms (true %.2f); target peak %.0f%% -> %.0f%% of its energy, Doppler cell %d (expect 7)",
+                         pass ? "PASS" : "FAIL", err, rms(truth), before.frac * 100, after.frac * 100, after.q))
+        }
+
+        // 7. Range-Doppler matrix pencil in Doppler: two targets in one range bin, half a Doppler FFT
+        //    cell apart (the FFT shows one blob), must give two peaks at the right velocities.
+        do {
+            var p = RadarParams(); p.tpMs = 5; p.rdDopplerPGA = false; p.rdSuperRes = .doppler
+            p.dbTop = 0; p.rdDbRange = 60
+            let m = 64, nr = 8, kb = 3
+            let qs = [10.0, 10.5], amps = [0.5, 0.5]
+            var inp = RangeDopplerInput(m: m, log2m: 6, nr: nr, n: 240, nfft: 1024, metersPerBin: 0.1,
+                                        params: p, analytic: true, generation: 0)
+            inp.bre = [Double](repeating: 0, count: m * nr); inp.bim = inp.bre
+            var rng = SystemRandomNumberGenerator()
+            for j in 0..<m {
+                for b in 0..<nr { inp.bre[b * m + j] = 1e-4 * Double.random(in: -1...1, using: &rng); inp.bim[b * m + j] = 1e-4 * Double.random(in: -1...1, using: &rng) }
+                for (q, a) in zip(qs, amps) {
+                    let ph = 2 * Double.pi * q * Double(j) / Double(m) + q
+                    inp.bre[kb * m + j] += a * cos(ph); inp.bim[kb * m + j] += a * sin(ph)
+                }
+            }
+            let t0 = DispatchTime.now().uptimeNanoseconds
+            let snap = RangeDopplerBuilder.compute(inp)
+            let ms = Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e6
+            var peaks: [Double] = []
+            if let s = snap {
+                let rows = s.rows, u = rows / m
+                let col = (0..<rows).map { s.db[$0 * nr + kb] }
+                for r in 1..<(rows - 1) where col[r] > col[r - 1] && col[r] >= col[r + 1] && col[r] > col.max()! - 10 {
+                    peaks.append(Double(r - rows / 2) / Double(u))   // slow-time frequency in FFT cells
+                }
+            }
+            peaks.sort()
+            let pass = peaks.count == 2 && abs(peaks[0] - qs[0]) <= 0.15 && abs(peaks[1] - qs[1]) <= 0.15
+            ok = ok && pass
+            print(String(format: "%@ range-Doppler pencil: Doppler peaks at %@ cells (expect 10.00 and 10.50), %.1f ms",
+                         pass ? "PASS" : "FAIL", peaks.map { String(format: "%.2f", $0) }.joined(separator: ", "), ms))
+        }
+
         print(ok ? "ALL PASS" : "SOME CHECKS FAILED")
         return ok
     }

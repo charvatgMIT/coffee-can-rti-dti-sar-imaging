@@ -224,9 +224,11 @@ struct SyncIFSimulator {
             let up = ph < 0.5
             let tr = (up ? ph : ph - 0.5) * period / fs
             let fb = { (r: Double) in 2 * r * bw / (speedOfLight * tp) * (up ? 1 : 0.92) }
-            let r2 = 25 + 12 * sin(2 * Double.pi * 0.08 * s / fs)
+            // walking pace (up to 1.1 m/s), inside the ±1.5 m/s the 50 Hz pulse rate can measure
+            let r2 = 25 + 12 * sin(2 * Double.pi * 0.015 * s / fs)
+            let carrier = 4 * Double.pi * params.fStartMHz * 1e6 * r2 / speedOfLight   // two-way phase: Doppler
             let v = 0.08 * sin(2 * Double.pi * fb(8) * tr + 0.3)
-                + 0.03 * sin(2 * Double.pi * fb(r2) * tr + 1.1)
+                + 0.03 * sin(2 * Double.pi * fb(r2) * tr + 1.1 + carrier)
                 + 0.01 * sin(2 * Double.pi * fb(60) * tr)
                 + 0.15 * (up ? tr / tp : 1 - tr / tp)
                 + 0.002 * Double.random(in: -0.5...0.5)

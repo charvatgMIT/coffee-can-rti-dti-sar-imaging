@@ -118,7 +118,7 @@ struct RTIPlot: View {
         let d = model.derived, img = model.rtiImage, unit = model.params.rangeUnit
         let period = 2 * model.params.tpMs / 1000   // nominal sync period, so the axis does not jitter
         let ageMax = Double(model.rti.height * model.rti.pulsesPerRow) * period
-        let top = model.params.dbTop, range = max(10, model.params.dbRange)
+        let top = model.params.dbTop, range = max(10, model.params.rtiDbRange)
         Canvas { ctx, size in
             let barSpace: CGFloat = 64
             let ax = drawAxes(ctx, size: CGSize(width: max(80, size.width - barSpace), height: size.height),
@@ -128,6 +128,52 @@ struct RTIPlot: View {
                 let frac = min(1, Double(img.width) * d.metersPerBin / d.rShow)
                 ctx.draw(Image(decorative: img, scale: 1).interpolation(.low),
                          in: CGRect(x: ax.rect.minX, y: ax.rect.minY, width: ax.rect.width * frac, height: ax.rect.height))
+            }
+            strokeBorder(ctx, ax)
+            drawColorBar(ctx, rect: CGRect(x: ax.rect.maxX + 14, y: ax.rect.minY, width: 12, height: ax.rect.height),
+                         top: top, range: range)
+        }
+    }
+}
+
+// MARK: - Range-Doppler
+
+struct RangeDopplerPlot: View {
+    @EnvironmentObject var model: RadarModel
+
+    var body: some View {
+        let d = model.derived, unit = model.params.rangeUnit, rd = model.rangeDoppler
+        let top = model.params.dbTop, range = max(10, model.params.rdDbRange)
+        let m = max(8, model.params.rdPulses)
+        let dv = wavelength(model.params) / 2 / (Double(m) * 2 * model.params.tpMs / 1000)
+        let collected = model.rdCollected
+        Canvas { ctx, size in
+            let barSpace: CGFloat = 64
+            let uf = unit.perMeter
+            let step = rd?.velocityStep ?? dv
+            let vTop = (rd?.topVelocity ?? Double(m / 2) * dv) + step / 2
+            let vBottom = vTop - Double(rd?.rows ?? m) * step
+            let ax = drawAxes(ctx, size: CGSize(width: max(80, size.width - barSpace), height: size.height),
+                              x: (0, d.rShow * uf), y: (vBottom * uf, vTop * uf),
+                              xLabel: "range (\(unit.abbreviation))", yLabel: "velocity (\(unit.abbreviation)/s, + = approaching)")
+            if let rd {
+                let frac = min(1, Double(rd.image.width) * d.metersPerBin / d.rShow)
+                ctx.draw(Image(decorative: rd.image, scale: 1).interpolation(.none),
+                         in: CGRect(x: ax.rect.minX, y: ax.rect.minY, width: ax.rect.width * frac, height: ax.rect.height))
+                var c = ctx
+                c.clip(to: Path(ax.rect))
+                let y0 = ax.py(0)
+                c.stroke(Path { $0.move(to: CGPoint(x: ax.rect.minX, y: y0)); $0.addLine(to: CGPoint(x: ax.rect.maxX, y: y0)) },
+                         with: .color(.white.opacity(0.6)), style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
+                if let p = rd.peak, p.range <= d.rShow {
+                    let pt = CGPoint(x: ax.px(p.range * uf), y: ax.py(p.velocity * uf))
+                    c.stroke(Path(ellipseIn: CGRect(x: pt.x - 6, y: pt.y - 6, width: 12, height: 12)), with: .color(.white), lineWidth: 1.5)
+                }
+            } else {
+                ctx.draw(Text(model.source == .none ? "Start capture to build the range-Doppler map"
+                                                    : "Collecting pulses… \(min(collected, m)) of \(m)")
+                            .font(.caption).foregroundStyle(.secondary),
+                         at: CGPoint(x: ax.rect.midX, y: ax.rect.midY))
             }
             strokeBorder(ctx, ax)
             drawColorBar(ctx, rect: CGRect(x: ax.rect.maxX + 14, y: ax.rect.minY, width: 12, height: ax.rect.height),
@@ -247,6 +293,36 @@ struct PGAPlot: View {
                 t == 0 ? path.move(to: pt) : path.addLine(to: pt)
             }
             c.stroke(path, with: .color(.purple), lineWidth: 1.4)
+            strokeBorder(ctx, ax)
+        }
+    }
+}
+
+/// Slow-time (Doppler) PGA correction per pulse of the newest range-Doppler map.
+struct SlowPGAPlot: View {
+    @EnvironmentObject var model: RadarModel
+
+    var body: some View {
+        let phase = model.rangeDoppler?.slowPhase
+        let pri = 2 * model.params.tpMs / 1000
+        Canvas { ctx, size in
+            let tEnd = Double(max(2, phase?.count ?? model.params.rdPulses) - 1) * pri
+            guard let phi = phase, phi.count > 1 else {
+                let ax = drawAxes(ctx, size: size, x: (0, tEnd), y: (-1, 1), xLabel: "time across map (s)", yLabel: "rad")
+                ctx.draw(Text("Waiting for a range-Doppler map…").font(.caption).foregroundStyle(.secondary),
+                         at: CGPoint(x: ax.rect.midX, y: ax.rect.midY))
+                strokeBorder(ctx, ax); return
+            }
+            let mx = max(0.2, Double(phi.map { abs($0) }.max() ?? 1) * 1.1)
+            let ax = drawAxes(ctx, size: size, x: (0, tEnd), y: (-mx, mx), xLabel: "time across map (s)", yLabel: "rad")
+            var c = ctx
+            c.clip(to: Path(ax.rect))
+            var path = Path()
+            for (j, v) in phi.enumerated() {
+                let pt = CGPoint(x: ax.px(Double(j) * pri), y: ax.py(Double(v)))
+                j == 0 ? path.move(to: pt) : path.addLine(to: pt)
+            }
+            c.stroke(path, with: .color(.teal), lineWidth: 1.4)
             strokeBorder(ctx, ax)
         }
     }

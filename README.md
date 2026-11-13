@@ -28,6 +28,12 @@ waterfall. The processing follows `read_data_RTI.m` from the MIT IAP radar cours
   or custom), showing the tuning voltage for any frequency span.
 - RTI history of 10 s to 5 min with a dB colour bar; range in feet or metres; adjustable
   max range for both plots.
+- Range-Doppler map (slow-time FFT over 16–256 pulses, velocity with + = approaching), with
+  optional range (fast-time) and Doppler (slow-time) PGA, and matrix pencil super-resolution
+  in range, Doppler or both. Maps are built on their own thread.
+- Waterfall dynamic-range and time-span sliders.
+- Processing never falls behind real time: if it can't keep up, audio is skipped and the
+  status line says so. `--live` starts capture at launch.
 - A built-in simulator for trying the app without the radar.
 
 ## Requirements

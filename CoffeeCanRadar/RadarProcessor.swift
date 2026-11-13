@@ -1,4 +1,5 @@
 import Accelerate
+import CoreGraphics
 import Foundation
 
 /// Half-width (taps per side) of the windowed-sinc interpolator.
@@ -42,6 +43,30 @@ struct EdgeSnapshot {
     var span: Int
 }
 
+/// One range-Doppler map: slow-time FFT of the newest `pulses` complex range profiles.
+struct RangeDopplerSnapshot {
+    var image: CGImage            // width = range bins from 0, height = Doppler bins, most approaching at the top
+    var pulses: Int
+    var velocityStep: Double      // m/s per Doppler bin
+    var topVelocity: Double       // m/s at the centre of the top row (+ = approaching)
+    var peak: (range: Double, velocity: Double, db: Double)?   // strongest cell off zero Doppler
+    var slowPhase: [Float]?       // slow-time (Doppler) PGA correction (rad) per pulse, when on
+    var rows: Int = 0             // image rows (Doppler cells x super-resolution upsampling)
+    var ms: Double = 0            // time to build the map
+    var db: [Float] = []          // the map in dB, [row][range bin]
+}
+
+/// Everything one range-Doppler map needs, copied off the DSP queue.
+struct RangeDopplerInput {
+    var m: Int, log2m: Int, nr: Int, n: Int, nfft: Int
+    var metersPerBin: Double
+    var params: RadarParams
+    var analytic: Bool              // fast-time samples are analytic (range PGA on) rather than the real IF
+    var generation: Int
+    var bre: [Double] = [], bim: [Double] = []   // complex range profiles, [range bin][pulse]
+    var fre: [Double] = [], fim: [Double] = []   // fast-time samples, [pulse][sample]
+}
+
 struct ProcessorSnapshot {
     var derived: Derived
     var generation: Int
@@ -71,6 +96,8 @@ struct ProcessorSnapshot {
     var pencilTargets: [(range: Double, db: Double)] = []
     var pencilOrder: Int?
     var pencilMs: Double?
+    var rangeDoppler: RangeDopplerSnapshot?
+    var rdCollected = 0
 }
 
 /// Triggers on the sync channel (left by default), extracts IF pulses from the other
@@ -125,6 +152,30 @@ final class RadarProcessor {
     private var pencilTargets: [(range: Double, db: Double)] = []
     private var pencilOrder: Int?
     private var pencilMs: Double?
+    // range-Doppler: ring of complex range profiles (bins 0 ..< nfft/2), newest at rdNewest
+    private let rdCap = 256
+    private var rdBins = 0
+    private var rdRe: [Float] = []
+    private var rdIm: [Float] = []
+    private var rdNewest = 0
+    private var rdCount = 0
+    private var rdRangeWindow: [Double] = []
+    private var rdRangeScale = 1.0
+    private var rdBufRe: [Double] = []
+    private var rdBufIm: [Double] = []
+    private var rdDirty = false
+    private var rdLastBuild: UInt64 = 0
+    // fast-time samples of the same pulses (for matrix pencil in range), and whether they are analytic
+    private var rdFastRe: [Float] = []
+    private var rdFastIm: [Float] = []
+    private var rdFastN = 0
+    private var rdAnalytic = false
+    // maps are built on their own queue
+    private let rdQueue = DispatchQueue(label: "org.coffeecanradar.CoffeeCanRadar.rangedoppler", qos: .userInitiated)
+    private let rdLock = NSLock()
+    private var rdBusy = false
+    private var rdLastMs = 0.0
+    private var rdResult: (generation: Int, snapshot: RangeDopplerSnapshot)?
 
     init() {
         d = Derived(RadarParams(), fs: 48000)
@@ -166,9 +217,14 @@ final class RadarProcessor {
         } else if p.pgaPulses != old.params.pgaPulses {
             pga = nil
         }
+        if p.rdRangePGA != old.params.rdRangePGA { rdCount = 0 }
+        rdDirty = true   // recolour / rebuild the range-Doppler map with the new settings
     }
 
     func resetPGA() { pga = nil }
+
+    /// Audio was dropped: the next samples don't follow on, so re-acquire the trigger.
+    func discontinuity() { resetBuffer() }
 
     /// Start over with an empty buffer and fresh averages (used when a source starts).
     func restart() {
@@ -207,6 +263,7 @@ final class RadarProcessor {
         windowScale = 2 / window.reduce(0, +)     // sine of amplitude 1 -> 0 dBFS
         pga = nil
         pencil = nil; pencilTargets = []; pencilOrder = nil
+        rdCount = 0; rdNewest = 0; rdRangeWindow = []
         cplxRe = [Double](repeating: 0, count: d.nfft)
         cplxIm = [Double](repeating: 0, count: d.nfft)
         if fftSetup == nil || fftLog2n != d.log2n {
@@ -350,8 +407,10 @@ final class RadarProcessor {
         let nb = nfft / 2
         var pow = [Double](repeating: 0, count: nb)
 
-        if params.pgaEnabled {
-            // Complex path: analytic signal -> PGA phase correction -> window -> FFT.
+        // Range PGA runs when the range profile uses it or the range-Doppler map does.
+        let rdPGA = params.rdEnabled && params.rdRangePGA
+        var corrected: (re: [Double], im: [Double])?
+        if params.pgaEnabled || rdPGA {
             if pga == nil || pga!.n != n { pga = RangePGA(n: n) }
             let p = pga!
             var a = p.analytic(x)
@@ -361,6 +420,12 @@ final class RadarProcessor {
             p.add(a, blockSize: max(4, params.pgaPulses), iterations: params.pgaIterations, bins: lo...hi,
                   minAgreement: params.pgaMinAgreement)
             p.correct(&a)
+            corrected = a
+        }
+        if rdPGA, let a = corrected { recordDoppler(re: a.re, im: a.im) } else { recordDoppler(re: x, im: nil) }
+
+        if params.pgaEnabled, let a = corrected {
+            // Complex path: analytic signal -> PGA phase correction -> window -> FFT.
             if params.rangeMethod == .matrixPencil {
                 pencilProfile(re: a.re, im: a.im, real: false, into: &pow)
                 accumulate(pow)
@@ -468,6 +533,169 @@ final class RadarProcessor {
         pencilMs = pencilMs.map { 0.9 * $0 + 0.1 * ms } ?? ms
     }
 
+    // MARK: range-Doppler
+
+    /// Stores this pulse's complex range profile (windowed FFT, amplitude in dBFS units) for
+    /// the Doppler FFT. `im` is nil for the real IF and the analytic signal's imaginary part with PGA.
+    private func recordDoppler(re: [Double], im: [Double]?) {
+        guard params.rdEnabled, let setup = fftSetup else { return }
+        let n = d.n, nfft = d.nfft, nb = nfft / 2
+        if rdBins != nb || rdRe.count != rdCap * nb || rdFastN != n || rdAnalytic != (im != nil) {
+            rdBins = nb
+            rdRe = [Float](repeating: 0, count: rdCap * nb)
+            rdIm = rdRe
+            rdFastN = n
+            rdAnalytic = im != nil
+            rdFastRe = [Float](repeating: 0, count: rdCap * n)
+            rdFastIm = rdFastRe
+            rdCount = 0; rdNewest = 0
+        }
+        if rdRangeWindow.count != n {
+            // The range window is the one chosen in Processing, even with SVA or the matrix pencil.
+            rdRangeWindow = makeWindow(params, n: n)
+            rdRangeScale = 2 / rdRangeWindow.reduce(0, +)
+            rdBufRe = [Double](repeating: 0, count: nfft)
+            rdBufIm = rdBufRe
+        }
+        for k in 0..<nfft {
+            rdBufRe[k] = k < n ? re[k] * rdRangeWindow[k] : 0
+            rdBufIm[k] = k < n ? (im?[k] ?? 0) * rdRangeWindow[k] : 0
+        }
+        fftInPlace(setup, &rdBufRe, &rdBufIm, log2n: d.log2n)
+        // a real sine of amplitude A peaks at A*sum(w)/2; its analytic signal at A*sum(w)
+        let g = im == nil ? rdRangeScale : rdRangeScale / 2
+        rdNewest = (rdNewest + 1) % rdCap
+        let base = rdNewest * nb
+        for k in 0..<nb {
+            rdRe[base + k] = Float(rdBufRe[k] * g)
+            rdIm[base + k] = Float(rdBufIm[k] * g)
+        }
+        let fb = rdNewest * n
+        for t in 0..<n {
+            rdFastRe[fb + t] = Float(re[t])
+            rdFastIm[fb + t] = Float(im?[t] ?? 0)
+        }
+        rdCount = min(rdCount + 1, rdCap)
+        rdDirty = true
+    }
+
+    /// Starts a new range-Doppler map on its own queue (at most 10 a second, never two at once)
+    /// and returns the last finished one, if it hasn't been handed out yet.
+    private func buildRangeDoppler() -> RangeDopplerSnapshot? {
+        rdLock.lock()
+        let done = rdResult, busy = rdBusy
+        rdResult = nil
+        rdLock.unlock()
+        let finished = done?.generation == generation ? done?.snapshot : nil
+        if let f = finished { rdLastMs = f.ms }
+        let now = DispatchTime.now().uptimeNanoseconds
+        let log2m = max(3, min(Int(log2(Double(max(8, params.rdPulses)))), Int(log2(Double(rdCap)))))
+        let m = 1 << log2m
+        // at most 10 maps a second, and at most half a core when the pencil makes maps slow
+        let interval = UInt64(max(100, 2 * rdLastMs) * 1e6)
+        guard params.rdEnabled, rdDirty, !busy, now - rdLastBuild >= interval, rdCount >= m, rdBins > 0,
+              rdFastN == d.n else { return finished }
+        rdDirty = false
+        rdLastBuild = now
+        let nr = min(d.nBins, rdBins), n = d.n
+        // slow-time block [range bin][pulse] and fast-time block [pulse][sample], oldest pulse first
+        var input = RangeDopplerInput(m: m, log2m: log2m, nr: nr, n: n, nfft: d.nfft, metersPerBin: d.metersPerBin,
+                                      params: params, analytic: rdAnalytic, generation: generation)
+        input.bre = [Double](repeating: 0, count: m * nr); input.bim = input.bre
+        let needFast = params.rdSuperRes == .range || params.rdSuperRes == .both
+        if needFast { input.fre = [Double](repeating: 0, count: m * n); input.fim = input.fre }
+        for j in 0..<m {
+            let slot = ((rdNewest - (m - 1) + j) % rdCap + rdCap) % rdCap
+            let src = slot * rdBins
+            for kb in 0..<nr {
+                input.bre[kb * m + j] = Double(rdRe[src + kb])
+                input.bim[kb * m + j] = Double(rdIm[src + kb])
+            }
+            if needFast {
+                for t in 0..<n {
+                    input.fre[j * n + t] = Double(rdFastRe[slot * n + t])
+                    input.fim[j * n + t] = Double(rdFastIm[slot * n + t])
+                }
+            }
+        }
+        rdLock.lock(); rdBusy = true; rdLock.unlock()
+        rdQueue.async { [weak self] in
+            let snap = RangeDopplerBuilder.compute(input)
+            guard let self else { return }
+            self.rdLock.lock()
+            self.rdResult = snap.map { (input.generation, $0) }
+            self.rdBusy = false
+            self.rdLock.unlock()
+        }
+        return finished
+    }
+
+    /// Phase gradient autofocus along slow time (Jakowatz/Eichel). Estimates the phase error that every
+    /// range bin shares from pulse to pulse (oscillator phase noise, vibration of the radar) and removes it
+    /// from the block in place. re/im hold [range bin][pulse] with `m` pulses per bin. Each range bin's
+    /// strongest Doppler cell is shifted to zero Doppler (so a target's own velocity is not an error), the
+    /// cells around it are windowed, and the pulse-to-pulse phase differences are summed over range bins.
+    /// Returns the total correction (rad, linear trend removed).
+    static func slowTimePGA(setup: FFTSetupD, re: inout [Double], im: inout [Double], m: Int, log2m: Int,
+                             bins: Range<Int>, iterations: Int) -> [Double] {
+        var total = [Double](repeating: 0, count: m)
+        guard bins.count > 0, m >= 8 else { return total }
+        // use range bins within 20 dB of the strongest
+        let energy = bins.map { kb in (0..<m).reduce(0.0) { $0 + re[kb * m + $1] * re[kb * m + $1] + im[kb * m + $1] * im[kb * m + $1] } }
+        guard let emax = energy.max(), emax > 0 else { return total }
+        let use = zip(bins, energy).filter { $0.1 >= emax * 0.01 }.map(\.0)
+        var cr = [[Double]](repeating: [Double](repeating: 0, count: m), count: use.count), ci = cr
+        var gr = [Double](repeating: 0, count: m), gi = gr
+        for _ in 0..<iterations {
+            // centre each bin's strongest Doppler cell
+            var avg = [Double](repeating: 0, count: m)
+            for (u, kb) in use.enumerated() {
+                for j in 0..<m { gr[j] = re[kb * m + j]; gi[j] = im[kb * m + j] }
+                fftInPlace(setup, &gr, &gi, log2n: log2m)
+                var q0 = 0, best = -1.0
+                for q in 0..<m { let p = gr[q] * gr[q] + gi[q] * gi[q]; if p > best { best = p; q0 = q } }
+                for q in 0..<m {
+                    let s = (q + q0) % m
+                    cr[u][q] = gr[s]; ci[u][q] = gi[s]
+                    avg[q] += gr[s] * gr[s] + gi[s] * gi[s]
+                }
+            }
+            // window: 1.5x the extent where the average centred spectrum is within 10 dB of its peak
+            var ext = 0
+            while ext < m / 2 - 1 && (avg[(ext + 1) % m] > 0.1 * avg[0] || avg[(m - ext - 1) % m] > 0.1 * avg[0]) { ext += 1 }
+            let half = min(m / 2, max(1, Int((1.5 * Double(ext + 1)).rounded(.up))))
+            // phase gradient summed over range bins
+            var sr = [Double](repeating: 0, count: m), si = sr
+            for u in use.indices {
+                for q in 0..<m {
+                    let signed = q <= m / 2 ? q : q - m
+                    let keep = abs(signed) <= half
+                    gr[q] = keep ? cr[u][q] : 0; gi[q] = keep ? ci[u][q] : 0
+                }
+                fftInPlace(setup, &gr, &gi, log2n: log2m, inverse: true)
+                for j in 1..<m {   // conj(h[j-1]) * h[j]
+                    sr[j] += gr[j - 1] * gr[j] + gi[j - 1] * gi[j]
+                    si[j] += gr[j - 1] * gi[j] - gi[j - 1] * gr[j]
+                }
+            }
+            var phi = [Double](repeating: 0, count: m)
+            for j in 1..<m { phi[j] = phi[j - 1] + atan2(si[j], sr[j]) }
+            removeLinearTrend(&phi)
+            for j in 0..<m {
+                total[j] += phi[j]
+                let c = cos(phi[j]), sn = -sin(phi[j])
+                for kb in 0..<(re.count / m) {
+                    let i = kb * m + j
+                    let a = re[i], b = im[i]
+                    re[i] = a * c - b * sn; im[i] = a * sn + b * c
+                }
+            }
+            if rms(phi) < 0.01 { break }
+        }
+        removeLinearTrend(&total)
+        return total
+    }
+
     /// Trace averaging, peak hold and RTI rows for one pulse's power spectrum.
     private func accumulate(_ pow: [Double]) {
         let nb = pow.count
@@ -524,7 +752,11 @@ final class RadarProcessor {
             s.pencilOrder = pencilOrder
             s.pencilMs = pencilMs
         }
-        if params.pgaEnabled, let p = pga {
+        if params.rdEnabled {
+            s.rangeDoppler = buildRangeDoppler()
+            s.rdCollected = rdCount
+        }
+        if params.pgaEnabled || (params.rdEnabled && params.rdRangePGA), let p = pga {
             s.pgaPhase = p.phase?.map { Float($0) }
             s.pgaUpdates = p.updates
             s.pgaAccepted = p.accepted

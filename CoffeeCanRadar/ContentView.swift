@@ -21,19 +21,43 @@ struct ContentView: View {
                     FFTPlot()
                 }
                 .frame(minHeight: 220)
+                HStack(spacing: 10) {
                 PlotCard(title: "Range vs. time intensity (newest at top)",
-                         detail: "\(model.pulseCount) pulses · colour \(Int(model.params.dbTop - model.params.dbRange))…\(Int(model.params.dbTop)) dB") {
-                    RTIPlot()
+                         detail: "\(model.pulseCount) pulses · colour \(Int(model.params.dbTop - model.params.rtiDbRange))…\(Int(model.params.dbTop)) dB") {
+                    VStack(spacing: 4) {
+                        RTIPlot()
+                        HStack {
+                            Text("Dynamic range")
+                            Slider(value: Binding(get: { model.params.rtiDbRange }, set: { model.params.rtiDbRange = $0.rounded() }), in: 10...100)
+                                .frame(maxWidth: 320)
+                            Text("\(Int(model.params.rtiDbRange)) dB").monospacedDigit().frame(width: 48, alignment: .trailing)
+                            Spacer(minLength: 24)
+                            Text("Time span")
+                            // logarithmic: fine control over short spans
+                            Slider(value: Binding(get: { log10(model.rtiViewSecondsShown) },
+                                                  set: { v in
+                                                      let s = pow(10, v)
+                                                      let r = s < 10 ? (s * 10).rounded() / 10 : s.rounded()
+                                                      model.params.rtiViewSeconds = r >= model.params.rtiSeconds ? 0 : r
+                                                  }),
+                                   in: log10(0.5)...log10(model.params.rtiSeconds))
+                                .frame(maxWidth: 320)
+                            Text(model.rtiViewSecondsShown < 10 ? String(format: "%.1f s", model.rtiViewSecondsShown)
+                                                                : String(format: "%.0f s", model.rtiViewSecondsShown))
+                                .monospacedDigit().frame(width: 48, alignment: .trailing)
+                            Spacer()
+                        }
+                        .font(.caption)
+                        .controlSize(.small)
+                    }
+                }
+                    if model.params.rdEnabled { RangeDopplerCard() }
                 }
                 .frame(minHeight: 200)
                 HStack(spacing: 10) {
                     PlotCard(title: "Last triggered pulse: sync (blue) / IF (orange)") { ScopePlot() }
-                    if model.params.pgaEnabled {
-                        PlotCard(title: "PGA phase error estimate",
-                                 detail: model.pgaAgreement.map { String(format: "accepted %d of %d · halves agree %.2f", model.pgaAccepted, model.pgaUpdates, $0) } ?? "") {
-                            PGAPlot()
-                        }
-                        .frame(width: 340)
+                    if model.params.pgaEnabled || (model.params.rdEnabled && (model.params.rdRangePGA || model.params.rdDopplerPGA)) {
+                        PGACard().frame(width: 340)
                     }
                     PlotCard(title: "Rising-edge zoom: samples ● and interpolation",
                              detail: model.edge.map { "\($0.upsample)× · edge at \(String(format: "%+.3f", $0.edgeOffset)) samples" } ?? "") {
@@ -72,6 +96,61 @@ struct ContentView: View {
             }
         }
         .navigationTitle("Coffee Can Radar RTI")
+    }
+}
+
+/// Range PGA (fast time) or range-Doppler slow-time PGA phase estimate.
+struct PGACard: View {
+    @EnvironmentObject var model: RadarModel
+    @State private var showDoppler = false
+
+    var body: some View {
+        let p = model.params
+        let rangeOn = p.pgaEnabled || (p.rdEnabled && p.rdRangePGA), dopplerOn = p.rdEnabled && p.rdDopplerPGA
+        let doppler = dopplerOn && (showDoppler || !rangeOn)
+        let slow = model.rangeDoppler?.slowPhase
+        PlotCard(title: doppler ? "Doppler PGA phase error" : "Range PGA phase error",
+                 detail: doppler ? (slow.map { String(format: "%.2f rad rms", rms($0.map(Double.init))) } ?? "")
+                                 : (model.pgaAgreement.map { String(format: "accepted %d of %d · halves agree %.2f", model.pgaAccepted, model.pgaUpdates, $0) } ?? "")) {
+            VStack(spacing: 2) {
+                if rangeOn && dopplerOn {
+                    Picker("", selection: $showDoppler) {
+                        Text("Range (fast time)").tag(false)
+                        Text("Doppler (slow time)").tag(true)
+                    }
+                    .pickerStyle(.segmented).labelsHidden().controlSize(.mini)
+                }
+                if doppler { SlowPGAPlot() } else { PGAPlot() }
+            }
+        }
+    }
+}
+
+struct RangeDopplerCard: View {
+    @EnvironmentObject var model: RadarModel
+
+    var body: some View {
+        let unit = model.params.rangeUnit, p = model.rangeDoppler?.peak
+        let pgaTag = [model.params.rdRangePGA ? "range" : nil, model.params.rdDopplerPGA ? "Doppler" : nil].compactMap { $0 }.joined(separator: " + ")
+        let sr = model.params.rdSuperRes
+        let srTag = sr == .off ? "" : " · " + sr.rawValue.lowercased()
+        let ms = model.rangeDoppler.map { String(format: " · %.0f ms", $0.ms) } ?? ""
+        PlotCard(title: "Range-Doppler (\(model.params.rdPulses) pulses, \(String(format: "%.2f", Double(model.params.rdPulses) * 2 * model.params.tpMs / 1000)) s)\(srTag)\(pgaTag.isEmpty ? "" : " · PGA: " + pgaTag)",
+                 detail: (p.map { String(format: "○ %.1f %@, %+.2f %@/s @ %.0f dB", $0.range * unit.perMeter, unit.abbreviation,
+                                        $0.velocity * unit.perMeter, unit.abbreviation, $0.db) } ?? "") + ms) {
+            VStack(spacing: 4) {
+                RangeDopplerPlot()
+                HStack {
+                    Text("Dynamic range")
+                    Slider(value: Binding(get: { model.params.rdDbRange }, set: { model.params.rdDbRange = $0.rounded() }), in: 10...100)
+                        .frame(maxWidth: 240)
+                    Text("\(Int(model.params.rdDbRange)) dB").monospacedDigit().frame(width: 48, alignment: .trailing)
+                    Spacer()
+                }
+                .font(.caption)
+                .controlSize(.small)
+            }
+        }
     }
 }
 
@@ -179,6 +258,16 @@ struct SettingsSidebar: View {
         return String(format: "%@. %@ tuning ≈ %.2f–%.2f V (typ. +25 °C curve).", bw, VCO.name, v0, v1)
     }
 
+    /// Doppler resolution and unambiguous velocity for the current settings.
+    private var rdSummary: String {
+        let p = model.params, u = p.rangeUnit
+        let pri = 2 * p.tpMs / 1000, lam = wavelength(p)
+        let vMax = lam / (4 * pri), dv = lam / 2 / (Double(p.rdPulses) * pri)
+        return String(format: "One pulse every %.0f ms (%.0f Hz), λ = %.1f cm: velocities up to ±%.2f %@/s are unambiguous, resolution %.3f %@/s. ",
+                      pri * 1000, 1 / pri, lam * 100, vMax * u.perMeter, u.abbreviation, dv * u.perMeter, u.abbreviation)
+            + "Each range bin of the newest pulses gets a slow-time FFT; + is approaching. The background setting in Processing applies first: \"Subtract mean pulse\" or the 2-pulse canceller remove stationary clutter (the canceller also weights the map by 2|sin(πf·T)|). With PGA on, the PGA-corrected pulses are used."
+    }
+
     var body: some View {
         Form {
             Section("Radar") {
@@ -272,6 +361,32 @@ struct SettingsSidebar: View {
                 Text("Estimates the phase error every sweep shares (mostly VCO tuning nonlinearity) from the strongest return in each pulse, and removes it before the FFT. An estimate is kept only if both halves of the block agree and the profiles get sharper. The error grows with range, so the correction is exact near the dominant target and approximate elsewhere. Works best with one strong target (e.g. a corner reflector) in view.")
                     .font(.caption).foregroundStyle(.secondary)
             }
+            Section("Range-Doppler") {
+                Toggle("Show range-Doppler map", isOn: $model.params.rdEnabled)
+                if model.params.rdEnabled {
+                    Picker("Pulses per Doppler FFT", selection: $model.params.rdPulses) {
+                        ForEach([16, 32, 64, 128, 256], id: \.self) {
+                            Text("\($0) (\(String(format: "%.2f", Double($0) * 2 * model.params.tpMs / 1000)) s)").tag($0)
+                        }
+                    }
+                    Picker("Doppler window", selection: $model.params.rdWindow) {
+                        ForEach(WindowType.allCases) { Text($0.rawValue).tag($0) }
+                    }
+                    Picker("Super-resolution", selection: $model.params.rdSuperRes) {
+                        ForEach(RDSuperRes.allCases) { Text($0.rawValue).tag($0) }
+                    }
+                    Text("Matrix pencil uses the settings under Range estimator (model order rule, max targets, forward–backward, peak half-width). In Doppler it fits each range bin's pulses and draws the pseudospectrum 4× finer than the FFT cells; in range it fits the Doppler-filtered samples of each pulse; with both, a cell is bright only where the two agree. Cells more than 10 dB below the colour scale are skipped, and the map's build time is shown in its header.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Toggle("Range PGA (fast time)", isOn: $model.params.rdRangePGA)
+                        .help("Removes the sweep-shared phase error (VCO nonlinearity) before the range FFT, for this map only.")
+                    Toggle("Doppler PGA (slow time)", isOn: $model.params.rdDopplerPGA)
+                        .help("Removes the pulse-to-pulse phase error shared by every range bin before the Doppler FFT.")
+                    Text("PGA on the map is separate from the range-profile PGA switch below, and uses its settings (pulses per estimate, iterations, minimum range). Range PGA: the fast-time phase error every sweep shares, estimated over many pulses from the strongest return. Doppler PGA: each map's pulses are re-estimated: each range bin's strongest Doppler cell is moved to zero Doppler (so true velocities are kept), and the pulse-to-pulse phase changes common to all range bins (oscillator phase noise, radar vibration) are removed, keeping no linear trend.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Text(rdSummary)
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             Section("Display") {
                 Picker("Range units", selection: $model.params.rangeUnit) {
                     ForEach(RangeUnit.allCases) { Text($0.rawValue).tag($0) }
@@ -279,8 +394,9 @@ struct SettingsSidebar: View {
                 NumberRow(title: "Max range shown (\(model.params.rangeUnit.abbreviation), 0 = all)", value: model.inDisplayUnits(\.maxRangeShown))
                 NumberRow(title: "Top (dB)", value: $model.params.dbTop)
                 Toggle("Track top automatically", isOn: $model.params.autoTop)
-                NumberRow(title: "Dynamic range (dB)", value: $model.params.dbRange)
-                Picker("RTI history", selection: $model.params.rtiSeconds) {
+                NumberRow(title: "Range-profile dynamic range (dB)", value: $model.params.dbRange)
+                NumberRow(title: "Waterfall dynamic range (dB)", value: $model.params.rtiDbRange)
+                Picker("RTI history kept", selection: $model.params.rtiSeconds) {
                     ForEach([10.0, 30, 60, 120, 300], id: \.self) { Text("\(Int($0)) s").tag($0) }
                 }
                 HStack {
