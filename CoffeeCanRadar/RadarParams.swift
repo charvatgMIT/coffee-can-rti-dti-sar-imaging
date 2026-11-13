@@ -96,6 +96,8 @@ struct RadarParams: Equatable, Codable {
     var rdRangePGA = true            // range-Doppler: fast-time (range) PGA correction
     var rdDopplerPGA = true          // range-Doppler: slow-time (Doppler) PGA correction
     var rdSuperRes: RDSuperRes = .both   // range-Doppler: FFT or matrix pencil super-resolution
+    var rdOrderRule: PencilOrderRule = .ester   // range-Doppler pencil: model order rule
+    var rdShowScatterers = false     // range-Doppler: mark the counted scatterers with ×
 }
 
 /// Quantities that follow from the settings and the sample rate.

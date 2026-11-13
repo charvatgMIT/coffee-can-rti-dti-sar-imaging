@@ -135,9 +135,14 @@ struct RangeDopplerCard: View {
         let sr = model.params.rdSuperRes
         let srTag = sr == .off ? "" : " · " + sr.rawValue.lowercased()
         let ms = model.rangeDoppler.map { String(format: " · %.0f ms", $0.ms) } ?? ""
-        PlotCard(title: "Range-Doppler (\(model.params.rdPulses) pulses, \(String(format: "%.2f", Double(model.params.rdPulses) * 2 * model.params.tpMs / 1000)) s)\(srTag)\(pgaTag.isEmpty ? "" : " · PGA: " + pgaTag)",
-                 detail: (p.map { String(format: "○ %.1f %@, %+.2f %@/s @ %.0f dB", $0.range * unit.perMeter, unit.abbreviation,
-                                        $0.velocity * unit.perMeter, unit.abbreviation, $0.db) } ?? "") + ms) {
+        let rdm = model.rangeDoppler
+        let orders = [rdm?.dopplerOrder.map { String(format: "Doppler order %.0f", $0) },
+                      rdm?.rangeOrder.map { String(format: "range order %.0f", $0) },
+                      rdm.flatMap { $0.scatterers.isEmpty ? nil : "\($0.scatterers.count) scatterers" + (model.params.rdShowScatterers ? " ×" : "") }].compactMap { $0 }
+        let orderTag = orders.isEmpty || sr == .off ? "" : " · " + orders.joined(separator: ", ")
+        PlotCard(title: "Range-Doppler (\(model.params.rdPulses) pulses, \(String(format: "%.2f", Double(model.params.rdPulses) * 2 * model.params.tpMs / 1000)) s)\(srTag)\(pgaTag.isEmpty ? "" : " · PGA: " + pgaTag)\(orderTag)",
+                 detail: (p.map { String(format: "○ %.1f %@, %+.2f m/s @ %.0f dB", $0.range * unit.perMeter, unit.abbreviation,
+                                        $0.velocity, $0.db) } ?? "") + ms) {
             VStack(spacing: 4) {
                 RangeDopplerPlot()
                 HStack {
@@ -260,11 +265,11 @@ struct SettingsSidebar: View {
 
     /// Doppler resolution and unambiguous velocity for the current settings.
     private var rdSummary: String {
-        let p = model.params, u = p.rangeUnit
+        let p = model.params
         let pri = 2 * p.tpMs / 1000, lam = wavelength(p)
         let vMax = lam / (4 * pri), dv = lam / 2 / (Double(p.rdPulses) * pri)
-        return String(format: "One pulse every %.0f ms (%.0f Hz), λ = %.1f cm: velocities up to ±%.2f %@/s are unambiguous, resolution %.3f %@/s. ",
-                      pri * 1000, 1 / pri, lam * 100, vMax * u.perMeter, u.abbreviation, dv * u.perMeter, u.abbreviation)
+        return String(format: "One pulse every %.0f ms (%.0f Hz), λ = %.1f cm: velocities up to ±%.2f m/s are unambiguous, resolution %.3f m/s. ",
+                      pri * 1000, 1 / pri, lam * 100, vMax, dv)
             + "Each range bin of the newest pulses gets a slow-time FFT; + is approaching. The background setting in Processing applies first: \"Subtract mean pulse\" or the 2-pulse canceller remove stationary clutter (the canceller also weights the map by 2|sin(πf·T)|). With PGA on, the PGA-corrected pulses are used."
     }
 
@@ -375,7 +380,13 @@ struct SettingsSidebar: View {
                     Picker("Super-resolution", selection: $model.params.rdSuperRes) {
                         ForEach(RDSuperRes.allCases) { Text($0.rawValue).tag($0) }
                     }
-                    Text("Matrix pencil uses the settings under Range estimator (model order rule, max targets, forward–backward, peak half-width). In Doppler it fits each range bin's pulses and draws the pseudospectrum 4× finer than the FFT cells; in range it fits the Doppler-filtered samples of each pulse; with both, a cell is bright only where the two agree. Cells more than 10 dB below the colour scale are skipped, and the map's build time is shown in its header.")
+                    if model.params.rdSuperRes != .off {
+                        Picker("Model order", selection: $model.params.rdOrderRule) {
+                            ForEach(PencilOrderRule.allCases) { Text($0.rawValue).tag($0) }
+                        }
+                        Toggle("Mark scatterers with ×", isOn: $model.params.rdShowScatterers)
+                    }
+                    Text("Every fit (each range bin's pulses, each Doppler row's samples) estimates its own model order with this rule; the header shows the median orders and the number of scatterers (up to 20; optionally marked with ×). Scatterers are counted from the range pencil's poles within 30 dB of the strongest, merging poles within two Doppler cells and one range cell of a stronger one, so they need range or range-and-Doppler mode. Max targets, ESTER threshold, forward–backward and peak half-width come from Range estimator. In Doppler it fits each range bin's pulses and draws the pseudospectrum 4× finer than the FFT cells; in range it fits the Doppler-filtered samples of each pulse; with both, a cell is bright only where the two agree. Cells more than 10 dB below the colour scale are skipped, and the map's build time is shown in its header.")
                         .font(.caption).foregroundStyle(.secondary)
                     Toggle("Range PGA (fast time)", isOn: $model.params.rdRangePGA)
                         .help("Removes the sweep-shared phase error (VCO nonlinearity) before the range FFT, for this map only.")

@@ -61,6 +61,8 @@ enum RangeDopplerBuilder {
         }
 
         /// Matrix pencil along slow time for every range bin: pseudospectrum on `u` rows per Doppler cell.
+        var dopplerOrders: [Int] = [], rangeOrders: [Int] = []
+        var rangePoles: [(row: Int, range: Double, power: Double)] = []   // fast-time pencil poles, per Doppler row
         func dopplerPencil(u: Int) -> [Float] {
             let rows = m * u
             var db = [Float](repeating: -400, count: rows * nr)
@@ -71,8 +73,9 @@ enum RangeDopplerBuilder {
             for kb in 0..<nr where Float(10 * log10(energy[kb] + 1e-20)) > floorDB {
                 let re = Array(bre[(kb * m)..<(kb * m + m)]), im = Array(bim[(kb * m)..<(kb * m + m)])
                 guard let r = mp.analyze(re: re, im: im, maxOrder: max(1, p.pencilMaxTargets), thresholdDB: p.pencilThresholdDB,
-                                         rule: p.pencilOrderRule, pairs: false, esterThreshold: p.esterThreshold,
+                                         rule: p.rdOrderRule, pairs: false, esterThreshold: p.esterThreshold,
                                          forwardBackward: p.pencilForwardBackward), r.order > 0 else { continue }
+                dopplerOrders.append(r.order)
                 let top = r.power.prefix(r.order).max() ?? 0
                 let s2 = MatrixPencil.sigmaMin2(schur: r.schur, order: r.order, omegas: omegas)
                 for row in 0..<rows { db[row * nr + kb] = Float(10 * log10(top * eps2 / (s2[row] + eps2) + 1e-20)) }
@@ -104,8 +107,14 @@ enum RangeDopplerBuilder {
                 let e = zip(re, im).reduce(0.0) { $0 + $1.0 * $1.0 + $1.1 * $1.1 } / Double(n) * scale
                 guard Float(10 * log10(e + 1e-20)) > floorDB,
                       let r = mp.analyze(re: re, im: im, maxOrder: cap, thresholdDB: p.pencilThresholdDB,
-                                         rule: p.pencilOrderRule, pairs: false, esterThreshold: p.esterThreshold,
+                                         rule: p.rdOrderRule, pairs: false, esterThreshold: p.esterThreshold,
                                          forwardBackward: p.pencilForwardBackward), r.order > 0 else { continue }
+                // a real IF puts each target at +range and its mirror at -range: count the positive ones
+                rangeOrders.append(inp.analytic ? r.order : (0..<r.order).filter { r.poles[$0].arg > 0 }.count)
+                for k in 0..<r.order where r.poles[k].arg > 0 {
+                    let rr = r.poles[k].arg / (2 * .pi) * Double(inp.nfft) * inp.metersPerBin
+                    if rr < Double(nr) * inp.metersPerBin { rangePoles.append((row, rr, r.power[k] * scale)) }
+                }
                 let top = (0..<r.order).filter { r.poles[$0].arg > 0 }.map { r.power[$0] }.max().map { $0 * scale } ?? 0
                 guard top > 0 else { continue }
                 let s2 = MatrixPencil.sigmaMin2(schur: r.schur, order: r.order, omegas: omegas)
@@ -167,6 +176,29 @@ enum RangeDopplerBuilder {
         snap.rows = rows
         snap.ms = Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e6
         snap.db = db
+        func median(_ a: [Int]) -> Double? { a.isEmpty ? nil : Double(a.sorted()[a.count / 2]) }
+        snap.dopplerOrder = median(dopplerOrders)
+        snap.rangeOrder = median(rangeOrders)
+        // Scatterers come from the range pencil's poles (they have no sidelobes, unlike the image): poles
+        // within 30 dB of the strongest, merging those within two Doppler FFT cells and one range-resolution
+        // cell of a stronger one (a target leaks into neighbouring Doppler rows through the window).
+        // The Doppler of each is refined on the Doppler-pencil image when that runs too.
+        if !rangePoles.isEmpty, let strongest = rangePoles.map(\.power).max() {
+            let res = Double(inp.nfft) / Double(max(1, n)) * inp.metersPerBin     // c / 2B
+            var kept: [(row: Int, range: Double, power: Double)] = []
+            for c in rangePoles.sorted(by: { $0.power > $1.power }) where c.power >= strongest * 1e-3 && kept.count < 20 {
+                if !kept.contains(where: { abs($0.row - c.row) <= 2 && abs($0.range - c.range) < res }) { kept.append(c) }
+            }
+            snap.scatterers = kept.map { k in
+                var row = (k.row - m / 2) * u + rows / 2          // centre of that Doppler FFT cell on the image
+                if u > 1 {
+                    let kb = min(nr - 1, max(0, Int((k.range / inp.metersPerBin).rounded())))
+                    let lo = max(0, row - 2 * u), hi = min(rows - 1, row + 2 * u)
+                    row = (lo...hi).max { db[$0 * nr + kb] < db[$1 * nr + kb] } ?? row
+                }
+                return (k.range, Double(rows / 2 - row) * dv)
+            }
+        }
         return snap
     }
 }

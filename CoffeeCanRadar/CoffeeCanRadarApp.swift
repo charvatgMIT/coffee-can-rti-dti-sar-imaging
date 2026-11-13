@@ -344,10 +344,11 @@ enum CommandLineTools {
                 }
             }
             peaks.sort()
-            let pass = peaks.count == 2 && abs(peaks[0] - qs[0]) <= 0.15 && abs(peaks[1] - qs[1]) <= 0.15
+            let order = snap?.dopplerOrder ?? 0
+            let pass = peaks.count == 2 && abs(peaks[0] - qs[0]) <= 0.15 && abs(peaks[1] - qs[1]) <= 0.15 && order == 2
             ok = ok && pass
-            print(String(format: "%@ range-Doppler pencil: Doppler peaks at %@ cells (expect 10.00 and 10.50), %.1f ms",
-                         pass ? "PASS" : "FAIL", peaks.map { String(format: "%.2f", $0) }.joined(separator: ", "), ms))
+            print(String(format: "%@ range-Doppler pencil: Doppler peaks at %@ cells (expect 10.00 and 10.50), ESTER order %.0f (expect 2), %.1f ms",
+                         pass ? "PASS" : "FAIL", peaks.map { String(format: "%.2f", $0) }.joined(separator: ", "), order, ms))
         }
 
         print(ok ? "ALL PASS" : "SOME CHECKS FAILED")

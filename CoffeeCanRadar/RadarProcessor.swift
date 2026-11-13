@@ -54,6 +54,9 @@ struct RangeDopplerSnapshot {
     var rows: Int = 0             // image rows (Doppler cells x super-resolution upsampling)
     var ms: Double = 0            // time to build the map
     var db: [Float] = []          // the map in dB, [row][range bin]
+    var dopplerOrder: Double?     // median model order of the slow-time (Doppler) pencil fits
+    var rangeOrder: Double?       // median model order (positive ranges) of the fast-time (range) fits
+    var scatterers: [(range: Double, velocity: Double)] = []   // local maxima of the map within the colour scale
 }
 
 /// Everything one range-Doppler map needs, copied off the DSP queue.

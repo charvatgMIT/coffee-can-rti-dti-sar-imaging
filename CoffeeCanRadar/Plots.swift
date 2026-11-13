@@ -147,6 +147,7 @@ struct RangeDopplerPlot: View {
         let m = max(8, model.params.rdPulses)
         let dv = wavelength(model.params) / 2 / (Double(m) * 2 * model.params.tpMs / 1000)
         let collected = model.rdCollected
+        let showX = model.params.rdShowScatterers
         Canvas { ctx, size in
             let barSpace: CGFloat = 64
             let uf = unit.perMeter
@@ -154,8 +155,8 @@ struct RangeDopplerPlot: View {
             let vTop = (rd?.topVelocity ?? Double(m / 2) * dv) + step / 2
             let vBottom = vTop - Double(rd?.rows ?? m) * step
             let ax = drawAxes(ctx, size: CGSize(width: max(80, size.width - barSpace), height: size.height),
-                              x: (0, d.rShow * uf), y: (vBottom * uf, vTop * uf),
-                              xLabel: "range (\(unit.abbreviation))", yLabel: "velocity (\(unit.abbreviation)/s, + = approaching)")
+                              x: (0, d.rShow * uf), y: (vBottom, vTop),   // velocity always in m/s
+                              xLabel: "range (\(unit.abbreviation))", yLabel: "velocity (m/s, + = approaching)")
             if let rd {
                 let frac = min(1, Double(rd.image.width) * d.metersPerBin / d.rShow)
                 ctx.draw(Image(decorative: rd.image, scale: 1).interpolation(.none),
@@ -165,8 +166,14 @@ struct RangeDopplerPlot: View {
                 let y0 = ax.py(0)
                 c.stroke(Path { $0.move(to: CGPoint(x: ax.rect.minX, y: y0)); $0.addLine(to: CGPoint(x: ax.rect.maxX, y: y0)) },
                          with: .color(.white.opacity(0.6)), style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
+                for s in rd.scatterers where showX && s.range <= d.rShow {
+                    let pt = CGPoint(x: ax.px(s.range * uf), y: ax.py(s.velocity))
+                    c.stroke(Path { $0.move(to: CGPoint(x: pt.x - 3, y: pt.y - 3)); $0.addLine(to: CGPoint(x: pt.x + 3, y: pt.y + 3))
+                                    $0.move(to: CGPoint(x: pt.x - 3, y: pt.y + 3)); $0.addLine(to: CGPoint(x: pt.x + 3, y: pt.y - 3)) },
+                             with: .color(.white), lineWidth: 1)
+                }
                 if let p = rd.peak, p.range <= d.rShow {
-                    let pt = CGPoint(x: ax.px(p.range * uf), y: ax.py(p.velocity * uf))
+                    let pt = CGPoint(x: ax.px(p.range * uf), y: ax.py(p.velocity))
                     c.stroke(Path(ellipseIn: CGRect(x: pt.x - 6, y: pt.y - 6, width: 12, height: 12)), with: .color(.white), lineWidth: 1.5)
                 }
             } else {
@@ -191,15 +198,13 @@ struct ScopePlot: View {
         let snap = model.scope
         Canvas { ctx, size in
             guard let s = snap, s.left.count > 1 else {
-                let ax = drawAxes(ctx, size: size, x: (0, 20), y: (-1, 1), xLabel: "time from trigger (ms)", yLabel: "")
+                let ax = drawAxes(ctx, size: size, x: (0, 20), y: (-1, 1), xLabel: "time from trigger (ms)", yLabel: "full scale")
                 strokeBorder(ctx, ax); return
             }
             let n = s.left.count
-            var amp: Float = 0.05
-            for k in 0..<n { amp = max(amp, abs(s.left[k]), abs(s.right[k])) }
-            let a = Double(amp) * 1.05
+            let a = 1.0   // the ADC's full scale: Core Audio delivers samples in -1 ... +1
             let tmin = -Double(s.pre) / s.fs * 1e3, tmax = Double(n - s.pre) / s.fs * 1e3
-            let ax = drawAxes(ctx, size: size, x: (tmin, tmax), y: (-a, a), xLabel: "time from trigger (ms)", yLabel: "")
+            let ax = drawAxes(ctx, size: size, x: (tmin, tmax), y: (-a, a), xLabel: "time from trigger (ms)", yLabel: "full scale")
             var c = ctx
             c.clip(to: Path(ax.rect))
             let step = max(1, n / Int(max(200, ax.rect.width * 2)))
@@ -232,15 +237,13 @@ struct EdgePlot: View {
         let snap = model.edge
         Canvas { ctx, size in
             guard let e = snap else {
-                let ax = drawAxes(ctx, size: size, x: (-4, 4), y: (-1, 1), xLabel: "samples from integer trigger", yLabel: "")
+                let ax = drawAxes(ctx, size: size, x: (-4, 4), y: (-1, 1), xLabel: "samples from integer trigger", yLabel: "full scale")
                 strokeBorder(ctx, ax); return
             }
-            var lo = Double(e.fine.min() ?? -1), hi = Double(e.fine.max() ?? 1)
-            let pad = (hi - lo) * 0.1 + 1e-6
-            lo -= pad; hi += pad
+            let lo = -1.0, hi = 1.0   // the ADC's full scale
             let span = Double(e.span)
             let ax = drawAxes(ctx, size: size, x: (-span, span), y: (lo, hi),
-                              xLabel: "samples from integer trigger (MATLAB ii)", yLabel: "")
+                              xLabel: "samples from integer trigger (MATLAB ii)", yLabel: "full scale")
             var c = ctx
             c.clip(to: Path(ax.rect))
             let dash = StrokeStyle(lineWidth: 1, dash: [3, 3])

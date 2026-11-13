@@ -30,7 +30,9 @@ waterfall. The processing follows `read_data_RTI.m` from the MIT IAP radar cours
   max range for both plots.
 - Range-Doppler map (slow-time FFT over 16–256 pulses, velocity with + = approaching), with
   optional range (fast-time) and Doppler (slow-time) PGA, and matrix pencil super-resolution
-  in range, Doppler or both. Maps are built on their own thread.
+  in range, Doppler or both, with an adaptive model order (ESTER by default) and a scatterer
+  count. Velocity is shown in m/s. Maps are built on their own thread.
+- The pulse and rising-edge plots use the ADC's fixed full-scale axis (−1 to +1).
 - Waterfall dynamic-range and time-span sliders.
 - Processing never falls behind real time: if it can't keep up, audio is skipped and the
   status line says so. `--live` starts capture at launch.
