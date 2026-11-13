@@ -3,6 +3,7 @@ import SwiftUI
 
 struct ContentView: View {
     @EnvironmentObject var model: RadarModel
+    @AppStorage("mainTab") private var tab = 0
 
     var body: some View {
         HStack(spacing: 0) {
@@ -11,61 +12,71 @@ struct ContentView: View {
             Divider()
             VStack(spacing: 10) {
                 StatsBar()
-                RangeSlider()
-                PlotCard(title: model.params.rangeMethod == .matrixPencil
-                            ? "Range profile: matrix pencil \(model.params.pencilDisplay.rawValue.lowercased()) (dB vs. range)\(model.params.pgaEnabled ? " · PGA on" : "") · ▼ = estimated targets"
-                            : "Range profile: FFT of IF channel (dBFS vs. range)\(model.params.pgaEnabled ? " · PGA on" : "")",
-                         detail: model.params.rangeMethod == .matrixPencil
-                            ? "N=\(model.derived.n), model order \(model.pencilOrder.map(String.init) ?? "–"), \(model.pencilTargets.count) targets, \(String(format: "%.1f", model.pencilMs ?? 0)) ms/pulse"
-                            : "N=\(model.derived.n), FFT \(model.derived.nfft), \(String(format: "%.3f", model.derived.metersPerBin * model.params.rangeUnit.perMeter)) \(model.params.rangeUnit.abbreviation)/bin") {
-                    FFTPlot()
+                Picker("", selection: $tab) {
+                    Text("Radar").tag(0)
+                    Text("Diagnostics").tag(1)
                 }
-                .frame(minHeight: 220)
-                HStack(spacing: 10) {
-                PlotCard(title: "Range vs. time intensity (newest at top)",
-                         detail: "\(model.pulseCount) pulses · colour \(Int(model.params.dbTop - model.params.rtiDbRange))…\(Int(model.params.dbTop)) dB") {
-                    VStack(spacing: 4) {
-                        RTIPlot()
-                        HStack {
-                            Text("Dynamic range")
-                            Slider(value: Binding(get: { model.params.rtiDbRange }, set: { model.params.rtiDbRange = $0.rounded() }), in: 10...100)
-                                .frame(maxWidth: 320)
-                            Text("\(Int(model.params.rtiDbRange)) dB").monospacedDigit().frame(width: 48, alignment: .trailing)
-                            Spacer(minLength: 24)
-                            Text("Time span")
-                            // logarithmic: fine control over short spans
-                            Slider(value: Binding(get: { log10(model.rtiViewSecondsShown) },
-                                                  set: { v in
-                                                      let s = pow(10, v)
-                                                      let r = s < 10 ? (s * 10).rounded() / 10 : s.rounded()
-                                                      model.params.rtiViewSeconds = r >= model.params.rtiSeconds ? 0 : r
-                                                  }),
-                                   in: log10(0.5)...log10(model.params.rtiSeconds))
-                                .frame(maxWidth: 320)
-                            Text(model.rtiViewSecondsShown < 10 ? String(format: "%.1f s", model.rtiViewSecondsShown)
-                                                                : String(format: "%.0f s", model.rtiViewSecondsShown))
-                                .monospacedDigit().frame(width: 48, alignment: .trailing)
-                            Spacer()
+                .pickerStyle(.segmented).labelsHidden().frame(maxWidth: 260)
+                if tab == 0 {
+                    RangeSlider()
+                    PlotCard(title: "Range vs. time intensity (newest at top)",
+                             detail: "\(model.pulseCount) pulses · colour \(Int(model.params.dbTop - model.params.rtiDbRange))…\(Int(model.params.dbTop)) dB") {
+                        VStack(spacing: 4) {
+                            RTIPlot()
+                            HStack {
+                                Text("Dynamic range")
+                                Slider(value: Binding(get: { model.params.rtiDbRange }, set: { model.params.rtiDbRange = $0.rounded() }), in: 10...100)
+                                    .frame(maxWidth: 320)
+                                Text("\(Int(model.params.rtiDbRange)) dB").monospacedDigit().frame(width: 48, alignment: .trailing)
+                                Spacer(minLength: 24)
+                                Text("Time span")
+                                // logarithmic: fine control over short spans
+                                Slider(value: Binding(get: { log10(model.rtiViewSecondsShown) },
+                                                      set: { v in
+                                                          let s = pow(10, v)
+                                                          let r = s < 10 ? (s * 10).rounded() / 10 : s.rounded()
+                                                          model.params.rtiViewSeconds = r >= model.params.rtiSeconds ? 0 : r
+                                                      }),
+                                       in: log10(0.5)...log10(model.params.rtiSeconds))
+                                    .frame(maxWidth: 320)
+                                Text(model.rtiViewSecondsShown < 10 ? String(format: "%.1f s", model.rtiViewSecondsShown)
+                                                                    : String(format: "%.0f s", model.rtiViewSecondsShown))
+                                    .monospacedDigit().frame(width: 48, alignment: .trailing)
+                                Spacer()
+                            }
+                            .font(.caption)
+                            .controlSize(.small)
                         }
-                        .font(.caption)
-                        .controlSize(.small)
                     }
-                }
-                    if model.params.rdEnabled { RangeDopplerCard() }
-                }
-                .frame(minHeight: 200)
-                HStack(spacing: 10) {
+                    .frame(minHeight: 170)
+                    if model.params.rdEnabled {
+                        RangeDopplerCard()
+                            .frame(minHeight: 170)
+                    }
+                    PlotCard(title: model.params.rangeMethod == .matrixPencil
+                                ? "Range profile: matrix pencil \(model.params.pencilDisplay.rawValue.lowercased()) (dB vs. range)\(model.params.pgaEnabled ? " · PGA on" : "") · ▼ = estimated targets"
+                                : "Range profile: FFT of IF channel (dBFS vs. range)\(model.params.pgaEnabled ? " · PGA on" : "")",
+                             detail: model.params.rangeMethod == .matrixPencil
+                                ? "N=\(model.derived.n), model order \(model.pencilOrder.map(String.init) ?? "–"), \(model.pencilTargets.count) targets, \(String(format: "%.1f", model.pencilMs ?? 0)) ms/pulse"
+                                : "N=\(model.derived.n), FFT \(model.derived.nfft), \(String(format: "%.3f", model.derived.metersPerBin * model.params.rangeUnit.perMeter)) \(model.params.rangeUnit.abbreviation)/bin") {
+                        FFTPlot()
+                    }
+                    .frame(minHeight: 170)
+                } else {
+                    // trigger and IF scope, PGA phase, rising-edge zoom
                     PlotCard(title: "Last triggered pulse: sync (blue) / IF (orange)") { ScopePlot() }
-                    if model.params.pgaEnabled || (model.params.rdEnabled && (model.params.rdRangePGA || model.params.rdDopplerPGA)) {
-                        PGACard().frame(width: 340)
+                        .frame(minHeight: 260)
+                    HStack(spacing: 10) {
+                        if model.params.pgaEnabled || (model.params.rdEnabled && (model.params.rdRangePGA || model.params.rdDopplerPGA)) {
+                            PGACard()
+                        }
+                        PlotCard(title: "Rising-edge zoom: samples ● and interpolation",
+                                 detail: model.edge.map { "\($0.upsample)× · edge at \(String(format: "%+.3f", $0.edgeOffset)) samples" } ?? "") {
+                            EdgePlot()
+                        }
                     }
-                    PlotCard(title: "Rising-edge zoom: samples ● and interpolation",
-                             detail: model.edge.map { "\($0.upsample)× · edge at \(String(format: "%+.3f", $0.edgeOffset)) samples" } ?? "") {
-                        EdgePlot()
-                    }
-                    .frame(width: 380)
+                    .frame(minHeight: 260)
                 }
-                .frame(height: 200)
             }
             .padding(12)
         }
@@ -140,7 +151,7 @@ struct RangeDopplerCard: View {
                       rdm?.rangeOrder.map { String(format: "range order %.0f", $0) },
                       rdm.flatMap { $0.scatterers.isEmpty ? nil : "\($0.scatterers.count) scatterers" + (model.params.rdShowScatterers ? " ×" : "") }].compactMap { $0 }
         let orderTag = orders.isEmpty || sr == .off ? "" : " · " + orders.joined(separator: ", ")
-        PlotCard(title: "Range-Doppler (\(model.params.rdPulses) pulses, \(String(format: "%.2f", Double(model.params.rdPulses) * 2 * model.params.tpMs / 1000)) s)\(srTag)\(pgaTag.isEmpty ? "" : " · PGA: " + pgaTag)\(orderTag)",
+        PlotCard(title: "Range-Doppler, + = approaching (\(model.params.rdPulses) pulses, \(String(format: "%.2f", Double(model.params.rdPulses) * 2 * model.params.tpMs / 1000)) s)\(srTag)\(pgaTag.isEmpty ? "" : " · PGA: " + pgaTag)\(orderTag)",
                  detail: (p.map { String(format: "○ %.1f %@, %+.2f m/s @ %.0f dB", $0.range * unit.perMeter, unit.abbreviation,
                                         $0.velocity, $0.db) } ?? "") + ms) {
             VStack(spacing: 4) {

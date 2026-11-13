@@ -156,7 +156,7 @@ struct RangeDopplerPlot: View {
             let vBottom = vTop - Double(rd?.rows ?? m) * step
             let ax = drawAxes(ctx, size: CGSize(width: max(80, size.width - barSpace), height: size.height),
                               x: (0, d.rShow * uf), y: (vBottom, vTop),   // velocity always in m/s
-                              xLabel: "range (\(unit.abbreviation))", yLabel: "velocity (m/s, + = approaching)")
+                              xLabel: "range (\(unit.abbreviation))", yLabel: "velocity (m/s)")
             if let rd {
                 let frac = min(1, Double(rd.image.width) * d.metersPerBin / d.rShow)
                 ctx.draw(Image(decorative: rd.image, scale: 1).interpolation(.none),
