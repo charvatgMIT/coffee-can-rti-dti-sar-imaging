@@ -72,6 +72,26 @@ The steps are:
    - 4× zero-padded 2-D inverse FFT;
    - crop and range^(3/2) scaling.
 
+**Matrix pencil super-resolution (optional),** using the RTI app's TLS matrix pencil with the gap rule by
+default (or ESTER), up to 8 scatterers per fit, with forward–backward averaging:
+
+- **Range (bandwidth extrapolation):** at each position the frequency samples are a sum of complex
+  exponentials, one per scatterer. The poles, put on the unit circle, and least-squares amplitudes
+  extend the band to 3× its width (about 1930–2920 MHz), with the measured samples kept in the middle.
+  Image formation then sees a wider band, so range is about 3× finer and the phases are intact. The
+  extended band is processed unwindowed (a window would taper away the extrapolated samples); SVA can
+  be added on top. The grating-lobe limit follows the extended band's highest frequency.
+- **Crossrange (per pixel, backprojection only):** once backprojection is focused on a pixel, the 55
+  positions' contributions are close to a sum of exponentials: the scatterer at the pixel is at zero
+  frequency and its neighbours are offset. A pencil on those 55 samples and amplitude-weighted lines
+  keep only the power within a set fraction of a resolution cell (0.1) of zero frequency. Pixels below
+  the colour scale and blanked angles are skipped. It takes about 10 s for the full warehouse image.
+- **On synthetic point targets:** with ordinary processing, a pair 1.0 ft apart in range and a pair
+  1.2 ft apart across range (at 100 ft) each look like one blob. With the pencil in range and
+  crossrange they split, with dips of 14.6 dB and 5.4 dB.
+- **On the warehouse scene,** mostly distributed clutter, the pencil gives sharper range and thinner
+  scatterers but a busier, streakier image than Hann processing. Treat it as an experimental view.
+
 **Range scaling:** the image is scaled by range^(3/2), the last step after autofocus, image formation
 and SVA. By default it uses the true range from the aperture centre, √(x² + y²). MIT's script uses
 downrange y, which under-scales wide crossranges, by 5 dB at (200, 100) ft; that's still available as

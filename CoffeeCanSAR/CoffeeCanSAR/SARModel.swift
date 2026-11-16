@@ -111,6 +111,7 @@ final class SARModel: ObservableObject {
                         chirps += " (the shortest position has \(a) complete)"
                     }
                     var jit = ""
+                    if let n = image.pencilNote { jit += " Super-resolution: " + n + "." }
                     if let ph = focused.rangePhase { jit += String(format: " Range PGA %.2f rad rms.", rms(ph)) }
                     if let ps = focused.crossPhase { jit += String(format: " Crossrange autofocus %.2f rad rms.", rms(ps)) }
                     if let ji = data.jitterIntegerUs {

@@ -11,6 +11,16 @@ enum PulseAlignment: String, Codable, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+enum SARSuperRes: String, Codable, CaseIterable, Identifiable {
+    case off = "Off"
+    case range = "Matrix pencil in range"
+    case crossrange = "Matrix pencil in crossrange"
+    case both = "Matrix pencil in range and crossrange"
+    var id: String { rawValue }
+    var inRange: Bool { self == .range || self == .both }
+    var inCrossrange: Bool { self == .crossrange || self == .both }
+}
+
 enum SVAMode: String, Codable, CaseIterable, Identifiable {
     case joint = "Joint I/Q"
     case separate = "I and Q separately (Stankwitz)"
@@ -63,6 +73,13 @@ struct SARParams: Codable, Equatable {
     var sva = false                // spatially variant apodization on the complex image (replaces the Hann windows)
     var svaMode: SVAMode = .joint
     var svaHannCap = true          // never let an SVA pixel exceed the (gain-matched) Hann image
+    var superRes: SARSuperRes = .off
+    var bweFactor = 3              // range: bandwidth extrapolated to this many times the measured band
+    var pencilRule: PencilOrderRule = .gap   // gap: about 3x faster than ESTER per fit (matters per pixel)
+    var pencilMaxTargets = 8       // model order cap per fit
+    var pencilFB = true            // forward-backward averaging in the pencil
+    var esterThreshold: Double = 0.3
+    var crossPeakWidth: Double = 0.1    // crossrange: kept width around the pixel, in FFT resolution cells
     var rangePGA = true            // phase gradient autofocus in range (fast time: one phase per frequency sample)
     var crossPGA = true            // autofocus in crossrange (one phase per aperture position)
     var pgaIterations = 8
@@ -95,6 +112,7 @@ struct SARImage {
     var crossRange: (Double, Double)   // ft
     var downRange: (Double, Double)    // ft
     var maxDB: Double
+    var pencilNote: String?       // super-resolution summary for the status line
 }
 
 struct DBImage {
@@ -427,7 +445,7 @@ func formImage(_ data: ParsedSAR, _ p: SARParams) -> (image: SARImage, kSpace: D
     if p.subtractMean && !data.prepared { subtractApertureMean(&re, &im, rows: M, cols: nt, mit: p.mitMean) }
     // Hann window over fast time: H(ii) = 0.5 + 0.5*cos(2*pi*(ii-N/2)/N), ii = 1..N
     let h = (1...nt).map { 0.5 + 0.5 * cos(2 * Double.pi * (Double($0) - Double(nt) / 2) / Double(nt)) }
-    if !p.sva { for r in 0..<M { for k in 0..<nt { re[r * nt + k] *= h[k]; im[r * nt + k] *= h[k] } } }
+    if !p.sva && p.bpHann { for r in 0..<M { for k in 0..<nt { re[r * nt + k] *= h[k]; im[r * nt + k] *= h[k] } } }
 
     // symmetric cross-range zero pad, along-track FFT, fftshift
     let zpad = max(p.zpad, 1 << log2Ceil(M))
@@ -604,8 +622,14 @@ func backproject(_ data: ParsedSAR, _ p: SARParams) -> SARImage {
             }
         }
     } }
-    return finishImage(re: &cre, im: &cim, rows: rows, cols: cols, crossRange: (-p.crossRangeFt, p.crossRangeFt),
-                       downRange: (p.downStartFt, p.downStopFt), rangeOffsetFt: 0, positions: M, p)
+    var note: String?
+    if p.superRes.inCrossrange {
+        note = crossrangePencil(bp: bp, xs: xs, ys: ys, re: &cre, im: &cim, rows: rows, cols: cols, positions: M, p)
+    }
+    var img = finishImage(re: &cre, im: &cim, rows: rows, cols: cols, crossRange: (-p.crossRangeFt, p.crossRangeFt),
+                          downRange: (p.downStartFt, p.downStopFt), rangeOffsetFt: 0, positions: M, p)
+    img.pencilNote = note
+    return img
 }
 
 /// bpBasic's range profiles for every aperture position, and the geometry, shared by the image and the autofocus.
@@ -851,8 +875,20 @@ func crossAutofocus(re: [Double], im: [Double], positions M: Int, cols K: Int, _
 /// Forms the image with the chosen algorithm. Dual apodization forms it unweighted and with the Hann window
 /// and keeps the smaller (gain-matched) value at every pixel; "limit by Hann" does the same with the SVA image.
 func formSARImage(_ data: ParsedSAR, _ p: SARParams) -> (SARImage, DBImage?) {
-    var (img, k) = formSARImageUnmasked(data, p)
-    if p.blankGratingLobes { blankGratingLobes(&img, p) }
+    var d = data, q = p
+    var note: [String] = []
+    if p.superRes.inCrossrange { q.sva = false }        // the crossrange pencil replaces the pixel magnitudes
+    if p.superRes.inCrossrange && p.algorithm == .rma { note.append("crossrange pencil needs backprojection") }
+    if p.superRes.inRange {
+        let t0 = Date()
+        let r = bandwidthExtrapolate(data, p)
+        d = r.data; q = r.params
+        note.append(String(format: "range pencil: median order %d, band %.0f–%.0f MHz (%.2f s)", r.medianOrder, q.fStartMHz, q.fStopMHz, Date().timeIntervalSince(t0)))
+    }
+    var (img, k) = formSARImageUnmasked(d, q)
+    if let n = img.pencilNote { note.append(n) }
+    img.pencilNote = note.isEmpty ? nil : note.joined(separator: "; ")
+    if p.blankGratingLobes { blankGratingLobes(&img, q) }   // q: an extrapolated band reaches higher frequencies
     return (img, k)
 }
 
@@ -878,6 +914,137 @@ func blankGratingLobes(_ img: inout SARImage, _ p: SARParams) {
         }
     }
     img.maxDB = Double(img.db.max() ?? 0)
+}
+
+// MARK: - Matrix pencil super-resolution
+
+/// Range super-resolution by bandwidth extrapolation. At every aperture position the frequency samples are a
+/// sum of complex exponentials (one per scatterer, frequency = its range), as in the RTI app. A matrix pencil
+/// (TLS, Hua & Sarkar; model order by ESTER or the gap rule) gives the poles; they are put on the unit circle,
+/// the amplitudes are refitted by least squares, and the model extends the band on both sides to `bweFactor`
+/// times its width, keeping the measured samples in the middle. Image formation then sees a wider band (finer
+/// range) with the phases intact, so backprojection still adds positions coherently.
+func bandwidthExtrapolate(_ d: ParsedSAR, _ p: SARParams) -> (data: ParsedSAR, params: SARParams, medianOrder: Int) {
+    let M = d.positions, K = d.cols
+    let E = K * max(0, p.bweFactor - 1) / 2
+    let K2 = K + 2 * E
+    let df = (p.fStopMHz - p.fStartMHz) / Double(K - 1)
+    var out = d
+    out.n = 2 * K2
+    let outRe = UnsafeMutableBufferPointer<Double>.allocate(capacity: M * K2), outIm = UnsafeMutableBufferPointer<Double>.allocate(capacity: M * K2)
+    let ordersBuf = UnsafeMutableBufferPointer<Int>.allocate(capacity: M)
+    defer { outRe.deallocate(); outIm.deallocate(); ordersBuf.deallocate() }
+    ordersBuf.initialize(repeating: 0)
+    DispatchQueue.concurrentPerform(iterations: M) { ii in
+        let re = Array(d.re[(ii * K)..<(ii * K + K)]), im = Array(d.im[(ii * K)..<(ii * K + K)])
+        let mp = MatrixPencil(n: K, pencil: K / 3)
+        var row = [Cx](repeating: .zero, count: K2)
+        for k in 0..<K { row[E + k] = Cx(re[k], im[k]) }
+        if let r = mp.analyze(re: re, im: im, maxOrder: max(1, p.pencilMaxTargets), thresholdDB: 40, rule: p.pencilRule,
+                              pairs: false, esterThreshold: p.esterThreshold, forwardBackward: p.pencilFB), r.order > 0 {
+            let poles = (0..<r.order).map { m -> Cx in let z = r.poles[m]; let a = max(1e-12, z.mag); return Cx(z.re / a, z.im / a) }
+            // least-squares amplitudes on the measured samples: (V^H V) a = V^H z
+            let J = poles.count
+            var vhv = [Cx](repeating: .zero, count: J * J), vhz = [Cx](repeating: .zero, count: J)
+            var pw = [Cx](repeating: Cx(1), count: J)
+            for k in 0..<K {
+                let z = Cx(re[k], im[k])
+                for a in 0..<J {
+                    vhz[a] = vhz[a] + pw[a].conj * z
+                    for b in 0..<J { vhv[a * J + b] = vhv[a * J + b] + pw[a].conj * pw[b] }
+                }
+                for a in 0..<J { pw[a] = pw[a] * poles[a] }
+            }
+            let tr = (0..<J).reduce(0.0) { $0 + vhv[$1 * J + $1].re }
+            for a in 0..<J { vhv[a * J + a] = vhv[a * J + a] + Cx(1e-10 * tr) }
+            if let amp = solveComplex(vhv, vhz, n: J) {
+                // extrapolate: below the band (k = -1, -2, ...) and above it (k = K, K+1, ...)
+                for a in 0..<J {
+                    let inv = poles[a].conj                       // 1/z on the unit circle
+                    var lo = amp[a], hi = amp[a]
+                    for _ in 0..<K { hi = hi * poles[a] }         // a z^K
+                    for e in 0..<E {
+                        lo = lo * inv                              // a z^-(e+1)
+                        row[E - 1 - e] = row[E - 1 - e] + lo
+                        row[E + K + e] = row[E + K + e] + hi
+                        hi = hi * poles[a]
+                    }
+                }
+            }
+            ordersBuf[ii] = r.order
+        }
+        for k in 0..<K2 { outRe[ii * K2 + k] = row[k].re; outIm[ii * K2 + k] = row[k].im }
+    }
+    out.re = Array(outRe); out.im = Array(outIm)
+    let orders = Array(ordersBuf)
+    var q = p
+    q.bpHann = false            // a window over the extended band would taper away the extrapolated samples
+    q.fStartMHz = p.fStartMHz - Double(E) * df
+    q.fStopMHz = p.fStopMHz + Double(E) * df
+    // range migration: widen the Ky grid to the new band, keeping its spacing
+    let kAdd = 4 * Double.pi * Double(E) * df * 1e6 / speedOfLight
+    q.kStop = p.kStop + kAdd
+    q.kStart = max(1, p.kStart - kAdd)
+    q.nKy = 1 << log2Ceil(Int(Double(p.nKy) * (q.kStop - q.kStart) / (p.kStop - p.kStart)))
+    return (out, q, orders.sorted()[M / 2])
+}
+
+/// Crossrange super-resolution, per pixel. Once backprojection has focused on a pixel, the positions'
+/// contributions c_ii(p) are, for scatterers near p across the line of sight, close to a sum of complex
+/// exponentials over the aperture: the scatterer at p itself at zero frequency, a neighbour at a frequency
+/// proportional to its offset. A matrix pencil on the M contributions finds them, and the pixel keeps only
+/// the power near zero frequency (amplitude-weighted lines, as in the RTI app): sum_m P_m eps^2/(w_m^2 + eps^2),
+/// P_m being the component's power if it summed coherently. Pixels below the colour scale (and blanked angles)
+/// are left as they are.
+func crossrangePencil(bp: BPProfiles, xs: [Double], ys: [Double], re: inout [Float], im: inout [Float],
+                      rows: Int, cols: Int, positions M: Int, _ p: SARParams) -> String {
+    let t0 = Date()
+    // threshold on the displayed (range-scaled) level
+    func scale(_ x: Double, _ y: Double) -> Double {
+        p.rangeScaling ? pow(p.scaleBySlantRange ? x * x + y * y : y * y, 1.5) : 1
+    }
+    var top = 0.0
+    for r in 0..<rows { for c in 0..<cols {
+        let i = r * cols + c
+        top = max(top, Double(re[i] * re[i] + im[i] * im[i]) * scale(xs[c], ys[r]))
+    } }
+    let floorPow = top * pow(10, -p.dbRange / 10)          // below the colour scale nothing would show
+    let sinMax = p.blankGratingLobes ? sin(gratingLobeFreeAngle(p)) : 2
+    let eps = 2 * Double.pi / Double(M) * max(0.02, p.crossPeakWidth), eps2 = eps * eps
+    var fitted = 0, orderSum = 0
+    let lock = NSLock()
+    re.withUnsafeMutableBufferPointer { orp in im.withUnsafeMutableBufferPointer { oip in
+        DispatchQueue.concurrentPerform(iterations: rows) { r in
+            let mp = MatrixPencil(n: M, pencil: max(2, M / 3))
+            var cr = [Double](repeating: 0, count: M), ci = cr
+            var nFit = 0, nOrd = 0
+            let y = ys[r]
+            for c in 0..<cols {
+                let i = r * cols + c, x = xs[c]
+                let a = Double(orp[i]), b = Double(oip[i])
+                let pw = a * a + b * b
+                guard pw * scale(x, y) >= floorPow else { continue }
+                let R = (x * x + y * y).squareRoot()
+                guard R > 0, abs(x) / R <= sinMax else { continue }
+                for ii in 0..<M { let v = bp.contribution(ii, x: x, y: y); cr[ii] = v.0; ci[ii] = v.1 }
+                guard let fit = mp.analyze(re: cr, im: ci, maxOrder: max(1, p.pencilMaxTargets), thresholdDB: 40, rule: p.pencilRule,
+                                           pairs: false, esterThreshold: p.esterThreshold, forwardBackward: p.pencilFB), fit.order > 0 else { continue }
+                var power = 0.0
+                for m in 0..<fit.order {
+                    let w = fit.poles[m].arg
+                    power += fit.power[m] * Double(M * M) * eps2 / (w * w + eps2)
+                }
+                // keep the backprojected phase, set the super-resolved magnitude
+                let mag = power.squareRoot(), old = pw.squareRoot()
+                orp[i] = old > 0 ? Float(a / old * mag) : Float(mag)
+                oip[i] = old > 0 ? Float(b / old * mag) : 0
+                nFit += 1; nOrd += fit.order
+            }
+            lock.lock(); fitted += nFit; orderSum += nOrd; lock.unlock()
+        }
+    } }
+    return String(format: "crossrange pencil: %d pixels, mean order %.1f (%.1f s)", fitted,
+                  fitted > 0 ? Double(orderSum) / Double(fitted) : 0, Date().timeIntervalSince(t0))
 }
 
 private func formSARImageUnmasked(_ data: ParsedSAR, _ p: SARParams) -> (SARImage, DBImage?) {

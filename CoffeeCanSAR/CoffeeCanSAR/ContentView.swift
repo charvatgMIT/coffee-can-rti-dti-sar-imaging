@@ -338,6 +338,28 @@ struct Sidebar: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
+            Section("Super-resolution (matrix pencil)") {
+                Picker("Matrix pencil", selection: $model.params.superRes) {
+                    ForEach(SARSuperRes.allCases) { Text($0.rawValue).tag($0) }
+                }
+                if model.params.superRes != .off {
+                    Picker("Model order", selection: $model.params.pencilRule) {
+                        ForEach(PencilOrderRule.allCases) { Text($0.rawValue).tag($0) }
+                    }
+                    IntNum(title: "Max scatterers per fit", value: $model.params.pencilMaxTargets)
+                    Toggle("Forward–backward averaging", isOn: $model.params.pencilFB)
+                    if model.params.superRes.inRange {
+                        Picker("Range: extrapolate band to", selection: $model.params.bweFactor) {
+                            ForEach([2, 3, 4], id: \.self) { Text("\($0)× (\(String(format: "%.0f", Double($0) * (model.params.fStopMHz - model.params.fStartMHz))) MHz)").tag($0) }
+                        }
+                    }
+                    if model.params.superRes.inCrossrange {
+                        Num(title: "Crossrange width kept (resolution cells)", value: $model.params.crossPeakWidth)
+                    }
+                    Text("Range: at each position the frequency samples are a sum of complex exponentials (one per scatterer). The pencil's poles and least-squares amplitudes extend the band on both sides (the measured samples stay in the middle), so image formation sees a wider band: finer range, phases intact. Crossrange (backprojection only): once focused on a pixel, the positions' contributions are close to a sum of exponentials over the aperture, the scatterer at the pixel at zero frequency and its neighbours offset; the pixel keeps only the fitted power within the kept width of zero frequency. Pixels below the colour scale are left as they are. The crossrange pencil fits every pixel, so it takes several seconds (the gap rule is about 3× faster than ESTER), and it replaces SVA. A narrower kept width separates closer scatterers but needs smaller pixels.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
             Section("Display") {
                 Num(title: "Crossrange ± (ft)", value: $model.params.crossRangeFt)
                 Num(title: "Downrange from (ft)", value: $model.params.downStartFt)
