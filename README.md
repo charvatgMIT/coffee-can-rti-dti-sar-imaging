@@ -5,6 +5,12 @@ USB audio interface (tested with a Behringer UCA222) in real time, triggers on t
 square wave, and shows the range profile (FFT of the IF) and a range-time-intensity (RTI)
 waterfall. The processing follows `read_data_RTI.m` from the MIT IAP radar course.
 
+The repository also contains **[Coffee Can SAR](CoffeeCanSAR/README.md)**, a separate macOS test app that
+forms synthetic aperture radar images from Coffee Can Radar rail recordings. It parses positions as in
+MIT's Experiment 3 scripts and forms images with AFRL backprojection or MIT's range migration
+algorithm, with optional range and crossrange autofocus and SVA. It is checked against MIT's example
+data set.
+
 ## Features
 
 - Live capture from any Core Audio input; the UCA222 ("USB Audio CODEC") is selected automatically.
