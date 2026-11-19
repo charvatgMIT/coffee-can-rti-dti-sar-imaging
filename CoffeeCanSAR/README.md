@@ -116,6 +116,10 @@ In a simulation of a 9.2 ft rail with targets at broadside, 60° and 70°:
 
 Use this option only for recordings made with 1-inch steps: MIT's example uses 2-inch steps.
 
+A "How it works" tab draws the processing chain as a block diagram that follows the current settings.
+About: vibe coded by Gregory L. Charvat & Jared Smith, based on the original MATLAB scripts from MIT OCW
+(RES.LL-003, IAP 2011).
+
 Tabs show the SAR image, the range profile at every position, and the wavenumber (K-space) data
 after Stolt interpolation.
 

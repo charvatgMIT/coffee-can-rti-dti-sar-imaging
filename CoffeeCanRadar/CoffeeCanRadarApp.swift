@@ -17,6 +17,11 @@ struct CoffeeCanRadarApp: App {
                 .environmentObject(model)
                 .frame(minWidth: 1150, minHeight: 780)
         }
+        .commands {
+            CommandGroup(replacing: .appInfo) {
+                Button("About Coffee Can Radar RTI") { AboutInfo.showPanel(appName: "Coffee Can Radar RTI") }
+            }
+        }
     }
 }
 
@@ -365,7 +370,12 @@ enum SnapshotTool {
         let url = URL(fileURLWithPath: args[i + 1])
         DispatchQueue.main.asyncAfter(deadline: .now() + 6) {
             MainActor.assumeIsolated {
-                let view = ContentView().environmentObject(model).frame(width: 1400, height: 900)
+                // --snapshot-how renders the "How it works" diagram alone (ImageRenderer can't draw scroll views)
+                let how = args.contains("--snapshot-how")
+                let view = Group {
+                    if how { HowItWorksRTIContent().padding(16).frame(width: 1100).background(Color.white) }
+                    else { ContentView().frame(width: 1400, height: 900) }
+                }.environmentObject(model)
                 let renderer = ImageRenderer(content: view)
                 renderer.scale = 1
                 if let tiff = renderer.nsImage?.tiffRepresentation,

@@ -14,6 +14,11 @@ struct CoffeeCanSARApp: App {
                 .environmentObject(model)
                 .frame(minWidth: 1000, minHeight: 700)
         }
+        .commands {
+            CommandGroup(replacing: .appInfo) {
+                Button("About Coffee Can SAR") { AboutInfo.showPanel(appName: "Coffee Can SAR") }
+            }
+        }
     }
 }
 

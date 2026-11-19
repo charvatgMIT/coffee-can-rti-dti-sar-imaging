@@ -15,8 +15,9 @@ struct ContentView: View {
                         Text("Range profiles").tag(1)
                         Text("K-space").tag(2)
                         Text("Autofocus").tag(3)
+                        Text("How it works").tag(4)
                     }
-                    .pickerStyle(.segmented).labelsHidden().frame(maxWidth: 480)
+                    .pickerStyle(.segmented).labelsHidden().frame(maxWidth: 600)
                     Spacer()
                     if model.busy { ProgressView().controlSize(.small) }
                 }
@@ -29,6 +30,7 @@ struct ContentView: View {
                     case 1: ProfilePlot()
                     case 2: KSpacePlot()
                     case 3: AutofocusPlots()
+                    case 4: HowItWorksSAR()
                     default: SARPlot()
                     }
                 }
@@ -52,6 +54,7 @@ struct ContentView: View {
         case 1: return "Range profile at each aperture position (after mean subtraction and Hann window)"
         case 2: return "Wavenumber domain after Stolt interpolation, |S(Kx, Ky)| (range migration only)"
         case 3: return "Autofocus: estimated phase errors (removed before image formation)"
+        case 4: return "Processing chain"
         default:
             return (model.result?.algorithm ?? model.params.algorithm) == .rma
                 ? "SAR image: range migration algorithm (MIT SBAND_RMA_IFP.m)"
@@ -65,7 +68,7 @@ struct ContentView: View {
         switch tab {
         case 1: top = r.rangeProfiles.maxDB
         case 2: guard let k = r.kSpace else { return "" }; top = k.maxDB
-        case 3: return ""
+        case 3, 4: return ""
         default: top = r.image.maxDB
         }
         return String(format: "colour %.0f…%.0f dB", top - model.params.dbRange, top)
@@ -391,6 +394,7 @@ struct Sidebar: View {
                 Text("Settings are remembered. Changing a parsing setting re-parses the recording; others only re-form the image.")
                     .font(.caption).foregroundStyle(.secondary)
             }
+            AboutSection(appName: "Coffee Can SAR")
         }
         .formStyle(.grouped)
     }

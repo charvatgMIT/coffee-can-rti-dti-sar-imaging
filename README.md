@@ -42,6 +42,9 @@ data set.
   pulse, PGA phase error, rising-edge zoom). The pulse and rising-edge plots use the ADC's
   fixed full-scale axis (−1 to +1).
 - Waterfall dynamic-range and time-span sliders.
+- A "How it works" tab with a block diagram of the processing chain, drawn from the current settings
+  (blocks for features that are switched off are greyed out). About: vibe coded by Gregory L. Charvat & Jared Smith, based on the
+  original MATLAB scripts from MIT OCW (RES.LL-003, IAP 2011).
 - Processing never falls behind real time: if it can't keep up, audio is skipped and the
   status line says so. `--live` starts capture at launch.
 - A built-in simulator for trying the app without the radar.

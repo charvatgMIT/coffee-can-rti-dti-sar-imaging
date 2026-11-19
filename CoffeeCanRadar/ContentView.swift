@@ -15,8 +15,9 @@ struct ContentView: View {
                 Picker("", selection: $tab) {
                     Text("Radar").tag(0)
                     Text("Diagnostics").tag(1)
+                    Text("How it works").tag(2)
                 }
-                .pickerStyle(.segmented).labelsHidden().frame(maxWidth: 260)
+                .pickerStyle(.segmented).labelsHidden().frame(maxWidth: 380)
                 if tab == 0 {
                     RangeSlider()
                     PlotCard(title: "Range vs. time intensity (newest at top)",
@@ -62,7 +63,7 @@ struct ContentView: View {
                         FFTPlot()
                     }
                     .frame(minHeight: 170)
-                } else {
+                } else if tab == 1 {
                     // trigger and IF scope, PGA phase, rising-edge zoom
                     PlotCard(title: "Last triggered pulse: sync (blue) / IF (orange)") { ScopePlot() }
                         .frame(minHeight: 260)
@@ -76,6 +77,8 @@ struct ContentView: View {
                         }
                     }
                     .frame(minHeight: 260)
+                } else {
+                    HowItWorksRTI()
                 }
             }
             .padding(12)
@@ -434,6 +437,7 @@ struct SettingsSidebar: View {
                 Text("Settings are remembered between launches.")
                     .font(.caption).foregroundStyle(.secondary)
             }
+            AboutSection(appName: "Coffee Can Radar RTI")
         }
         .formStyle(.grouped)
     }
