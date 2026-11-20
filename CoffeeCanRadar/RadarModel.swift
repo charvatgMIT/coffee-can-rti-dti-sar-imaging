@@ -1,4 +1,6 @@
 import AVFoundation
+import AppKit
+import UniformTypeIdentifiers
 import CoreAudio
 import CoreGraphics
 import Foundation
@@ -16,6 +18,32 @@ struct LiveStats {
 }
 
 enum SourceKind { case none, live, simulation }
+
+/// Which processing chain gets the live audio. Only one runs at a time, to save compute.
+enum ProcessingMode: String { case rti = "RTI", dti = "Doppler vs. time", sar = "SAR" }
+
+/// Thread-safe switch read by the audio thread. When a chain is switched back on, its first block
+/// asks it to start over (its history would otherwise jump across the time it was off).
+final class ModeGate {
+    private let lock = NSLock()
+    private var mode: ProcessingMode = .rti
+    private var restartRTI = false, restartDTI = false
+
+    func set(_ m: ProcessingMode) {
+        lock.lock(); defer { lock.unlock() }
+        guard m != mode else { return }
+        mode = m
+        restartRTI = true; restartDTI = true
+    }
+
+    /// (this chain is on, it must start over first)
+    func take(_ m: ProcessingMode) -> (on: Bool, restart: Bool) {
+        lock.lock(); defer { lock.unlock() }
+        guard mode == m else { return (false, false) }
+        if m == .rti { defer { restartRTI = false }; return (true, restartRTI) }
+        defer { restartDTI = false }; return (true, restartDTI)
+    }
+}
 
 /// A setting change the app recommends after looking at the incoming signals.
 enum Suggestion: Equatable {
@@ -68,6 +96,11 @@ final class RadarModel: ObservableObject {
     @Published private(set) var pencilMs: Double?
     @Published private(set) var rangeDoppler: RangeDopplerSnapshot?
     @Published private(set) var rdCollected = 0
+    @Published private(set) var dt: DTSnapshot?
+    @Published private(set) var dtBusy = false
+    @Published var dtSelectedRow: Int?          // recording: the dwell whose spectrum is shown (nil = last)
+    @Published private(set) var processingMode: ProcessingMode = .rti
+    private let gate = ModeGate()
 
     let rti = RTIBuffer()
     private let queue = DispatchQueue(label: "org.coffeecanradar.CoffeeCanRadar.dsp", qos: .userInteractive)
@@ -79,11 +112,23 @@ final class RadarModel: ObservableObject {
     private var generation = -1
     private var userPicked = false
     private let backlog = AudioBacklog()
+    private let dtQueue = DispatchQueue(label: "org.coffeecanradar.CoffeeCanRadar.doppler", qos: .userInitiated)
+    private let dtEngine = DopplerTimeEngine()
+    private let dtBacklog = AudioBacklog()
 
     init() {
         derived = Derived(params, fs: fs)
         let p = params, f = fs, proc = processor
         queue.async { proc.update(params: p, fs: f) }
+        dtEngine.onSnapshot = { [weak self] snap in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                if let sel = self.dtSelectedRow, sel >= snap.rows.count { self.dtSelectedRow = nil }
+                self.dt = snap
+                self.dtBusy = false
+            }
+        }
+        requestDopplerUpdate()
         refreshDevices()
         timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30, repeats: true) { [weak self] _ in self?.poll() }
         if CommandLine.arguments.contains("--simulate") {
@@ -92,7 +137,10 @@ final class RadarModel: ObservableObject {
         if CommandLine.arguments.contains("--live") {
             DispatchQueue.main.async { self.startLive() }
         }
-        SnapshotTool.scheduleIfRequested(model: self)
+        if let i = CommandLine.arguments.firstIndex(of: "--open-doppler"), i + 1 < CommandLine.arguments.count {
+            UserDefaults.standard.set(3, forKey: "mainTab")
+            openDopplerRecording(URL(fileURLWithPath: CommandLine.arguments[i + 1]))
+        }
     }
 
     // MARK: devices
@@ -129,16 +177,33 @@ final class RadarModel: ObservableObject {
                 self.begin(fs: self.input.sampleRate)
                 let proc = self.processor, q = self.queue, backlog = self.backlog
                 backlog.reset()
+                let dtEng = self.dtEngine, dq = self.dtQueue, dtBacklog = self.dtBacklog, fs = self.input.sampleRate
+                dtBacklog.reset()
+                dq.async { dtEng.startLive(fs: fs) }
+                let dtLimit = Int(fs * 2)
                 // At most 0.5 s of audio may wait for processing; beyond that blocks are dropped so
                 // the display can never lag further behind real time.
                 let limit = Int(self.input.sampleRate / 2)
+                let gate = self.gate
                 self.input.onSamples = { l, r in
                     let n = l.count
-                    guard let resync = backlog.tryAdd(n, limit: limit) else { return }
-                    q.async {
-                        if resync { proc.discontinuity() }
-                        proc.push(l, r)
-                        backlog.remove(n)
+                    // only the chain for the selected tab gets the audio
+                    let rti = gate.take(.rti)
+                    if rti.on, let resync = backlog.tryAdd(n, limit: limit) {
+                        q.async {
+                            if rti.restart { proc.restart() } else if resync { proc.discontinuity() }
+                            proc.push(l, r)
+                            backlog.remove(n)
+                        }
+                    }
+                    // Doppler vs. time (CW) runs on its own queue
+                    let dti = gate.take(.dti)
+                    if dti.on, let dtResync = dtBacklog.tryAdd(n, limit: dtLimit) {
+                        dq.async {
+                            if dti.restart { dtEng.startLive(fs: fs) } else if dtResync { dtEng.discontinuity() }
+                            dtEng.push(l, r)
+                            dtBacklog.remove(n)
+                        }
                     }
                 }
                 try self.input.start()
@@ -160,7 +225,13 @@ final class RadarModel: ObservableObject {
         let sim = SimulatedSource(params: params)
         begin(fs: 48000)
         let proc = processor
-        sim.onSamples = { l, r in proc.push(l, r) }   // already on `queue`
+        let gate = self.gate
+        sim.onSamples = { l, r in                     // already on `queue`
+            let rti = gate.take(.rti)
+            guard rti.on else { return }
+            if rti.restart { proc.restart() }
+            proc.push(l, r)
+        }
         sim.start(queue: queue)
         simulator = sim
         source = .simulation
@@ -205,6 +276,8 @@ final class RadarModel: ObservableObject {
     // MARK: settings
 
     private static let paramsKey = "RadarParams"
+
+    static func loadParamsForTools() -> RadarParams { loadParams() }
 
     private static func loadParams() -> RadarParams {
         // Merge the saved settings over the defaults so settings added in later versions still load.
@@ -254,6 +327,7 @@ final class RadarModel: ObservableObject {
         derived = Derived(params, fs: fs)
         let p = params, f = fs, proc = processor
         queue.async { proc.update(params: p, fs: f) }
+        requestDopplerUpdate()
         if params.rtiSeconds != old.rtiSeconds {
             resetRTI(width: rti.width)
         } else if params.rtiViewSeconds != old.rtiViewSeconds {
@@ -281,6 +355,16 @@ final class RadarModel: ObservableObject {
         return Int((secs * 1000 / (2 * params.tpMs)).rounded())
     }
 
+    /// The waterfall plot's height in screen pixels: rebuilds the image with at most that many rows.
+    func setRTIPixelHeight(_ px: Int) {
+        let rows = max(40, min(2000, px))
+        guard rows != rti.maxRows else { return }
+        rti.maxRows = rows
+        guard rti.width > 0 else { return }
+        rti.setView(pulses: rtiViewPulses, top: params.dbTop, range: params.rtiDbRange)
+        rtiImage = rti.makeImage()
+    }
+
     private func resetRTI(width: Int) {
         rti.reset(width: width, pulses: rtiPulses, viewPulses: rtiViewPulses, top: params.dbTop, range: params.rtiDbRange)
         rtiImage = rti.makeImage()
@@ -290,6 +374,72 @@ final class RadarModel: ObservableObject {
     func inDisplayUnits(_ key: WritableKeyPath<RadarParams, Double>) -> Binding<Double> {
         Binding(get: { self.params[keyPath: key] * self.params.rangeUnit.perMeter },
                 set: { self.params[keyPath: key] = $0 / self.params.rangeUnit.perMeter })
+    }
+
+    // MARK: processing mode
+
+    /// Tabs 0 (Radar) and 1 (Diagnostics) run the FMCW (RTI) chain, 3 the Doppler-vs-time chain,
+    /// 4 (SAR) neither; 2 (How it works) leaves the mode as it was.
+    func selectTab(_ tab: Int) {
+        let m: ProcessingMode
+        switch tab {
+        case 0, 1: m = .rti
+        case 3: m = .dti
+        case 4: m = .sar
+        default: return
+        }
+        guard m != processingMode else { return }
+        processingMode = m
+        gate.set(m)
+    }
+
+    // MARK: Doppler vs. time
+
+    private func requestDopplerUpdate() {
+        let eng = dtEngine
+        eng.request(params)
+        dtQueue.async { eng.applyPending() }
+    }
+
+    /// Asks for a .wav recording (sync/IF stereo or IF only) and shows its Doppler vs. time.
+    func chooseDopplerRecording() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.wav, .audio]
+        panel.message = "Choose a CW Doppler recording (.wav), e.g. MIT's \"Off of Newton Exit 17.wav\""
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        openDopplerRecording(url)
+    }
+
+    func openDopplerRecording(_ url: URL) {
+        dtBusy = true
+        dtSelectedRow = nil
+        let eng = dtEngine
+        dtQueue.async { [weak self] in
+            do {
+                let file = try AVAudioFile(forReading: url)
+                let frames = AVAudioFrameCount(file.length)
+                guard let buf = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: frames) else { throw CocoaError(.fileReadCorruptFile) }
+                try file.read(into: buf)
+                guard let ch = buf.floatChannelData else { throw CocoaError(.fileReadCorruptFile) }
+                let n = Int(buf.frameLength), chans = Int(buf.format.channelCount)
+                let left = Array(UnsafeBufferPointer(start: ch[0], count: n))
+                let right = chans > 1 ? Array(UnsafeBufferPointer(start: ch[1], count: n)) : []
+                eng.loadFile(name: url.lastPathComponent, left: left, right: right, fs: file.processingFormat.sampleRate)
+            } catch {
+                DispatchQueue.main.async {
+                    self?.dtBusy = false
+                    self?.setStatus("Couldn't read \(url.lastPathComponent): \(error.localizedDescription)", error: true)
+                }
+            }
+        }
+    }
+
+    /// Back from a recording to the live input.
+    func showDopplerLive() {
+        dtBusy = true
+        dtSelectedRow = nil
+        let eng = dtEngine
+        dtQueue.async { eng.showLive() }
     }
 
     func resetPGA() {
@@ -311,6 +461,8 @@ final class RadarModel: ObservableObject {
     // MARK: polling
 
     private func poll() {
+        // the RTI displays only change while the RTI chain runs; polling would just redraw the window
+        guard processingMode == .rti else { return }
         let proc = processor
         queue.async { [weak self] in
             let s = proc.takeSnapshot()
@@ -428,7 +580,9 @@ final class RadarModel: ObservableObject {
 /// Long histories keep the image at most `maxRows` tall by combining several pulses per
 /// row (keeping the strongest value in each range bin, so brief targets stay visible).
 final class RTIBuffer {
-    static let maxRows = 400   // about the plot height in pixels, so scrolling never resamples rows
+    /// At most the plot's height in screen pixels, so drawing never drops rows: dropping a different
+    /// set of rows as the image scrolls makes narrow returns flicker. Set from the plot's size.
+    var maxRows = 400
     private(set) var height = 400
     private(set) var pulsesPerRow = 1
     private(set) var width = 0
@@ -481,7 +635,7 @@ final class RTIBuffer {
 
     private func configureView(_ pulses: Int) {
         let total = max(10, min(pulses, rawCap))
-        pulsesPerRow = max(1, Int((Double(total) / Double(RTIBuffer.maxRows)).rounded(.up)))
+        pulsesPerRow = max(1, Int((Double(total) / Double(maxRows)).rounded(.up)))
         height = max(10, total / pulsesPerRow)
         rows = 0
         newest = 0

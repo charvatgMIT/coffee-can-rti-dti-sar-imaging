@@ -172,22 +172,23 @@
 		CC000000000000000000000E /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "-";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_HARDENED_RUNTIME = NO;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = "Coffee Can Radar RTI";
+				INFOPLIST_KEY_CFBundleDisplayName = "Coffee Can RTI DTI SAR Imaging";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
-				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Coffee Can Radar reads the sync (left) and IF (right) channels from the audio interface to compute range.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Coffee Can Radar reads the sync and IF channels from the audio interface to compute range and Doppler.";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = org.coffeecanradar.CoffeeCanRadar;
-				PRODUCT_NAME = CoffeeCanRadarRTI;
+				PRODUCT_NAME = "Coffee Can RTI DTI SAR Imaging";
 				OTHER_SWIFT_FLAGS = "-Xcc -DACCELERATE_NEW_LAPACK";
 				SWIFT_VERSION = 5.0;
 			};
@@ -196,22 +197,23 @@
 		CC000000000000000000000F /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "-";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_HARDENED_RUNTIME = NO;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = "Coffee Can Radar RTI";
+				INFOPLIST_KEY_CFBundleDisplayName = "Coffee Can RTI DTI SAR Imaging";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
-				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Coffee Can Radar reads the sync (left) and IF (right) channels from the audio interface to compute range.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Coffee Can Radar reads the sync and IF channels from the audio interface to compute range and Doppler.";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = org.coffeecanradar.CoffeeCanRadar;
-				PRODUCT_NAME = CoffeeCanRadarRTI;
+				PRODUCT_NAME = "Coffee Can RTI DTI SAR Imaging";
 				OTHER_SWIFT_FLAGS = "-Xcc -DACCELERATE_NEW_LAPACK";
 				SWIFT_VERSION = 5.0;
 			};

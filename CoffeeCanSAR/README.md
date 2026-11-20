@@ -1,5 +1,9 @@
 # Coffee Can SAR
 
+> **Superseded.** This stand-alone app is now the **SAR imaging** tab of Coffee Can RTI DTI SAR
+> Imaging (see the [main README](../README.md)), which is the app to use. This project is kept for
+> reference only and is no longer updated; the description of the SAR processing below still applies.
+
 A macOS test GUI that forms synthetic aperture radar (SAR) images from MIT Coffee Can Radar
 recordings. Parsing is a direct port of MIT's Experiment 3 script `SBAND_RMA_opendata.m`
 (Gregory L. Charvat). Images are formed by either of two algorithms:

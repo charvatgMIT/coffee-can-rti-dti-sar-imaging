@@ -1,15 +1,22 @@
-# Coffee Can Radar RTI
+# Coffee Can RTI DTI SAR Imaging
 
-A native macOS app for the MIT Coffee Can Radar. It reads the sync and IF channels from a
-USB audio interface (tested with a Behringer UCA222) in real time, triggers on the sync
-square wave, and shows the range profile (FFT of the IF) and a range-time-intensity (RTI)
-waterfall. The processing follows `read_data_RTI.m` from the MIT IAP radar course.
+A native macOS app for the MIT Coffee Can Radar, with three ways of running the radar:
 
-The repository also contains **[Coffee Can SAR](CoffeeCanSAR/README.md)**, a separate macOS test app that
-forms synthetic aperture radar images from Coffee Can Radar rail recordings. It parses positions as in
-MIT's Experiment 3 scripts and forms images with AFRL backprojection or MIT's range migration
-algorithm, with optional range and crossrange autofocus and SVA. It is checked against MIT's example
-data set.
+- **Radar (RTI):** FMCW ranging. It reads the sync and IF channels from a USB audio interface
+  (tested with a Behringer UCA222) in real time, triggers on the sync square wave, and shows the
+  range profile (FFT of the IF), a range-time-intensity (RTI) waterfall and a range-Doppler map.
+  The processing follows `read_data_RTI.m` from the MIT IAP radar course.
+- **Doppler vs. time (DTI):** the radar run as an unmodulated CW radar, after `read_data_doppler.m`.
+- **SAR imaging:** synthetic aperture radar images from rail recordings. Positions are parsed as in
+  MIT's Experiment 3 scripts and images are formed with AFRL backprojection or MIT's range
+  migration algorithm, with optional autofocus, SVA and matrix pencil super-resolution. It is
+  checked against MIT's example data set; details are in [CoffeeCanSAR/README.md](CoffeeCanSAR/README.md).
+
+**This app supersedes the earlier Coffee Can Radar RTI and stand-alone Coffee Can SAR apps;**
+use it for all new work. It is built from `CoffeeCanRadar.xcodeproj` (the RTI app's project,
+renamed). The SAR code now lives in `CoffeeCanRadar/SAR/`, and the SAR settings carry over the
+first time the combined app runs. The old stand-alone SAR project in `CoffeeCanSAR/` is kept for
+reference only and is no longer updated.
 
 ## Features
 
@@ -38,7 +45,16 @@ data set.
   optional range (fast-time) and Doppler (slow-time) PGA, and matrix pencil super-resolution
   in range, Doppler or both, with an adaptive model order (ESTER by default) and a scatterer
   count. Velocity is shown in m/s. Maps are built on their own thread.
-- Two tabs: Radar (RTI, range-Doppler map, range profile) and Diagnostics (last triggered
+- A Doppler vs. time tab for the radar run as an unmodulated CW radar (Vtune held fixed), after
+  MIT's `read_data_doppler.m`: the IF is cut into Tp dwells (250 ms), the mean is subtracted and
+  each dwell's zero-padded FFT is one row of speed (0–40 m/s, −35…0 dB re the strongest cell).
+  Options: SVA, a window, prominent-point PGA on the strongest mover in each dwell, and a matrix
+  pencil (ESTER, gap or threshold model order) on the band-limited, decimated analytic IF.
+  Works live from the UCA222 or on a recording (**Open recording…**, e.g. MIT's
+  "Off of Newton Exit 17.wav"); click the plot to see one dwell's spectrum. On that recording the
+  FFT output matches MATLAB running MIT's script to 1e-5 dB.
+- Tabs: Radar (RTI, range-Doppler map, range profile), Doppler vs. time, SAR imaging (its own
+  sidebar, Open/Process buttons and sub-tabs), and Diagnostics (last triggered
   pulse, PGA phase error, rising-edge zoom). The pulse and rising-edge plots use the ADC's
   fixed full-scale axis (−1 to +1).
 - Waterfall dynamic-range and time-span sliders.
@@ -70,8 +86,11 @@ up-chirp and low during the down-chirp, Tp is half the sync period.
 The app can check its own processing without the radar:
 
 ```bash
-CoffeeCanRadarRTI.app/Contents/MacOS/CoffeeCanRadarRTI --selftest
+"Coffee Can RTI DTI SAR Imaging.app/Contents/MacOS/Coffee Can RTI DTI SAR Imaging" --selftest
 ```
 
-Other options: `--list-devices` lists audio inputs, and `--simulate` starts with the built-in
-simulator.
+Other options: `--list-devices` lists audio inputs, `--simulate` starts with the built-in
+simulator, `--open-doppler <file.wav>` opens a CW recording in the Doppler vs. time tab, and
+`--open-sar <file.wav>` opens a SAR recording, `--dump <file.wav> <dir>` writes the parsed SAR
+data, and `--doppler-dump <file.wav> <out.f32>` writes its Doppler vs. time rows (dB re the strongest
+cell, float32) for comparison with MATLAB.

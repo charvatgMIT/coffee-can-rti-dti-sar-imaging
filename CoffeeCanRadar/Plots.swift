@@ -113,25 +113,41 @@ struct FFTPlot: View {
 
 struct RTIPlot: View {
     @EnvironmentObject var model: RadarModel
+    @Environment(\.displayScale) private var displayScale
 
     var body: some View {
         let d = model.derived, img = model.rtiImage, unit = model.params.rangeUnit
         let period = 2 * model.params.tpMs / 1000   // nominal sync period, so the axis does not jitter
         let ageMax = Double(model.rti.height * model.rti.pulsesPerRow) * period
+        let rowsHigh = CGFloat(model.rti.height) / max(1, displayScale)     // the image at one row per screen pixel (points)
         let top = model.params.dbTop, range = max(10, model.params.rtiDbRange)
         Canvas { ctx, size in
             let barSpace: CGFloat = 64
+            // Draw the image one row per pixel, never stretched or squeezed vertically (resampling rows
+            // that scroll makes narrow returns flicker); the age axis is scaled to match.
+            let plotH = max(10, size.height - 40)
+            let drawH = min(plotH, rowsHigh)
             let ax = drawAxes(ctx, size: CGSize(width: max(80, size.width - barSpace), height: size.height),
-                              x: (0, d.rShow * unit.perMeter), y: (0, ageMax), xLabel: "range (\(unit.abbreviation))", yLabel: "age (s)", yDown: true)
+                              x: (0, d.rShow * unit.perMeter), y: (0, ageMax * Double(plotH / max(1, drawH))),
+                              xLabel: "range (\(unit.abbreviation))", yLabel: "age (s)", yDown: true)
             // The image holds every range bin; crop it to the bins shown.
             if let full = img, let img = full.cropping(to: CGRect(x: 0, y: 0, width: min(full.width, d.nBins), height: full.height)) {
                 let frac = min(1, Double(img.width) * d.metersPerBin / d.rShow)
                 ctx.draw(Image(decorative: img, scale: 1).interpolation(.low),
-                         in: CGRect(x: ax.rect.minX, y: ax.rect.minY, width: ax.rect.width * frac, height: ax.rect.height))
+                         in: CGRect(x: ax.rect.minX, y: ax.rect.minY, width: ax.rect.width * frac, height: drawH))
             }
             strokeBorder(ctx, ax)
             drawColorBar(ctx, rect: CGRect(x: ax.rect.maxX + 14, y: ax.rect.minY, width: 12, height: ax.rect.height),
                          top: top, range: range)
+        }
+        .background {
+            // the image gets no more rows than the plot has pixels (drawAxes leaves 40 points for the axes)
+            GeometryReader { geo in
+                let px = Int(((geo.size.height - 40) * displayScale).rounded(.down))
+                Color.clear
+                    .onAppear { model.setRTIPixelHeight(px) }
+                    .onChange(of: px) { _, v in model.setRTIPixelHeight(v) }
+            }
         }
     }
 }

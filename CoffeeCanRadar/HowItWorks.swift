@@ -39,11 +39,24 @@ struct HowItWorksRTIContent: View {
              DiagramBlock(title: "Matrix pencil", detail: "\(p.rdSuperRes == .off ? "range, Doppler or both" : p.rdSuperRes.rawValue.replacingOccurrences(of: "Matrix pencil in ", with: "")); model order \(p.rdOrderRule.rawValue)", active: p.rdEnabled && p.rdSuperRes != .off)],
             [DiagramBlock(title: "Range-Doppler map", detail: "velocity in m/s (+ = approaching), strongest mover, model orders and scatterer count; built on its own thread", active: p.rdEnabled, kind: .output)],
         ]
+        let mp = p.dtMethod == .matrixPencil
+        let fileName = model.dt?.fileName
+        let dtRows: [[DiagramBlock]] = [
+            [DiagramBlock(title: "Audio input (CW)", detail: "the radar run unmodulated (Vtune fixed, fc = \(Int(p.dtCarrierMHz)) MHz): only the IF on the \(ifc) input; no sync needed", active: fileName == nil, kind: .input),
+             DiagramBlock(title: "Recording (.wav)", detail: fileName.map { "\($0), IF channel \(ifc)" } ?? "e.g. MIT's \"Off of Newton Exit 17.wav\"", active: fileName != nil, kind: .input)],
+            [DiagramBlock(title: "Dwells", detail: "N = Tp·fs = \(Int((p.dtDwellMs / 1000 * d.fs).rounded())) samples per Doppler spectrum (Tp = \(String(format: "%g", p.dtDwellMs)) ms)\(p.dtSubtractMean ? "; mean subtracted (the whole recording's, as MIT's script)" : "")")],
+            [DiagramBlock(title: "PGA (strongest mover)", detail: "per dwell: the dominant line's phase wander removed, keeping its mean velocity; kept only if sharper", active: p.dtPGA)],
+            [DiagramBlock(title: "FFT", detail: "\(p.dtWindow.rawValue) window, zero pad \(p.dtZeroPad)×", active: !mp && !p.dtSVA),
+             DiagramBlock(title: "SVA", detail: "per-bin weighting between rectangular and Hann", active: !mp && p.dtSVA),
+             DiagramBlock(title: "Matrix pencil", detail: "band 0–\(Int(p.dtMaxVelocity)) m/s decimated, TLS pencil, model order \(p.dtOrderRule.rawValue)", active: mp)],
+            [DiagramBlock(title: "Doppler vs. time", detail: "v = f·λ/2 (speed: the real IF can't tell approaching from receding), 0–\(Int(p.dtMaxVelocity)) m/s, \(Int(p.dtDbRange)) dB below the strongest", kind: .output),
+             DiagramBlock(title: "Doppler spectrum", detail: "one dwell (newest, or the time clicked), strongest mover in m/s and mph", kind: .output)],
+        ]
         let diag: [[DiagramBlock]] = [
             [DiagramBlock(title: "Diagnostics tab", detail: "last triggered pulse (sync and IF, full scale), rising-edge zoom with the interpolation, PGA phase estimates", kind: .output)],
         ]
         VStack(alignment: .leading, spacing: 12) {
-                Text("How Coffee Can Radar RTI works").font(.title3.weight(.semibold))
+                Text("How the RTI, range-Doppler and Doppler vs. time processing works").font(.title3.weight(.semibold))
                 Text("The blocks follow your current settings: coloured blocks are in use, grey dashed ones are switched off.")
                     .font(.callout).foregroundStyle(.secondary)
                 DiagramLegend()
@@ -59,7 +72,10 @@ struct HowItWorksRTIContent: View {
                         BlockDiagram(rows: diag)
                     }
                 }
-                AboutCard(appName: "Coffee Can Radar RTI")
+                Text("Doppler vs. time tab (CW, after MIT's read_data_doppler.m)").font(.headline).padding(.top, 4)
+                BlockDiagram(rows: dtRows)
+                Text("The SAR imaging tab has its own How it works view.").font(.callout).foregroundStyle(.secondary)
+                AboutCard(appName: AboutInfo.appName)
         }
     }
 }

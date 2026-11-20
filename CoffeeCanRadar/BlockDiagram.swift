@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-// Block diagram and About pieces, shared (as copies) by Coffee Can Radar RTI and Coffee Can SAR.
+// Block diagram and About pieces.
 
 struct DiagramBlock: Identifiable {
     enum Kind { case input, process, output }
@@ -87,6 +87,7 @@ struct DiagramLegend: View {
 }
 
 enum AboutInfo {
+    static let appName = "Coffee Can RTI DTI SAR Imaging"
     static let credit = "Vibe coded by Gregory L. Charvat & Jared Smith based on original Matlab scripts from MIT OCW"
     static let ocwURL = URL(string: "https://ocw.mit.edu/courses/res-ll-003-build-a-small-radar-system-capable-of-sensing-range-doppler-and-synthetic-aperture-radar-imaging-january-iap-2011/resources/doppler-radar-using-the-coffee-can-radar/")!
 

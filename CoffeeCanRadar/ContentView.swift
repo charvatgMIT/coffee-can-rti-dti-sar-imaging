@@ -3,22 +3,32 @@ import SwiftUI
 
 struct ContentView: View {
     @EnvironmentObject var model: RadarModel
+    @EnvironmentObject var sar: SARModel
     @AppStorage("mainTab") private var tab = 0
+
+    /// Tab tags (stored, so they keep their numbers): 0 Radar, 3 Doppler vs. time, 4 SAR imaging, 1 Diagnostics, 2 How it works.
+    private var isSAR: Bool { tab == 4 }
 
     var body: some View {
         HStack(spacing: 0) {
-            SettingsSidebar()
-                .frame(width: 310)
+            Group {
+                if isSAR { SARSidebar() } else { SettingsSidebar() }
+            }
+            .frame(width: 310)
             Divider()
             VStack(spacing: 10) {
-                StatsBar()
+                if tab == 0 || tab == 1 || (tab == 2 && model.processingMode == .rti) { StatsBar() }
                 Picker("", selection: $tab) {
-                    Text("Radar").tag(0)
+                    Text("Radar (RTI)").tag(0)
+                    Text("Doppler vs. time").tag(3)
+                    Text("SAR imaging").tag(4)
                     Text("Diagnostics").tag(1)
                     Text("How it works").tag(2)
                 }
-                .pickerStyle(.segmented).labelsHidden().frame(maxWidth: 380)
-                if tab == 0 {
+                .pickerStyle(.segmented).labelsHidden().frame(maxWidth: 640)
+                if isSAR {
+                    SARPane()
+                } else if tab == 0 {
                     RangeSlider()
                     PlotCard(title: "Range vs. time intensity (newest at top)",
                              detail: "\(model.pulseCount) pulses · colour \(Int(model.params.dbTop - model.params.rtiDbRange))…\(Int(model.params.dbTop)) dB") {
@@ -77,6 +87,8 @@ struct ContentView: View {
                         }
                     }
                     .frame(minHeight: 260)
+                } else if tab == 3 {
+                    DopplerTimeTab()
                 } else {
                     HowItWorksRTI()
                 }
@@ -84,6 +96,24 @@ struct ContentView: View {
             .padding(12)
         }
         .toolbar {
+            if isSAR {
+                ToolbarItemGroup(placement: .primaryAction) {
+                    Button { sar.chooseFile() } label: { Label("Open SAR recording…", systemImage: "folder") }
+                        .keyboardShortcut("o", modifiers: .command)
+                    Button { sar.process() } label: { Label("Process", systemImage: "play.fill") }
+                        .keyboardShortcut("r", modifiers: .command)
+                        .disabled(sar.fileURL == nil || sar.busy)
+                }
+            } else {
+                radarToolbar
+            }
+        }
+        .onAppear { model.selectTab(tab) }
+        .onChange(of: tab) { _, t in model.selectTab(t) }
+        .navigationTitle(isSAR ? "\(AboutInfo.appName): \(sar.fileURL?.lastPathComponent ?? "SAR imaging")" : AboutInfo.appName)
+    }
+
+    @ToolbarContentBuilder private var radarToolbar: some ToolbarContent {
             ToolbarItemGroup(placement: .navigation) {
                 Picker("Input", selection: $model.selectedDeviceID) {
                     if model.devices.isEmpty { Text("No audio inputs").tag(AudioDeviceID(0)) }
@@ -108,8 +138,6 @@ struct ContentView: View {
                         .keyboardShortcut(".", modifiers: .command)
                 }
             }
-        }
-        .navigationTitle("Coffee Can Radar RTI")
     }
 }
 
@@ -265,6 +293,7 @@ struct StatTile: View {
 
 struct SettingsSidebar: View {
     @EnvironmentObject var model: RadarModel
+    @AppStorage("mainTab") private var tab = 0
 
     /// Tuning voltages for f start / f stop on the VCO's typical +25 °C curve.
     private var vcoSummary: String {
@@ -289,6 +318,7 @@ struct SettingsSidebar: View {
 
     var body: some View {
         Form {
+            if tab == 3 { DopplerTimeSettings() }
             Section("Radar") {
                 NumberRow(title: "Up-ramp time Tp (ms)", value: $model.params.tpMs)
                 Picker("Band", selection: $model.params.band) {
@@ -437,7 +467,7 @@ struct SettingsSidebar: View {
                 Text("Settings are remembered between launches.")
                     .font(.caption).foregroundStyle(.secondary)
             }
-            AboutSection(appName: "Coffee Can Radar RTI")
+            AboutSection(appName: AboutInfo.appName)
         }
         .formStyle(.grouped)
     }

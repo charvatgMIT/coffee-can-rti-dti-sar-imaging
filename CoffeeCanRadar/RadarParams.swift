@@ -40,6 +40,13 @@ enum RDSuperRes: String, CaseIterable, Identifiable, Codable {
     var id: String { rawValue }
 }
 
+/// Doppler-vs-time (CW) spectrum estimator.
+enum DTMethod: String, CaseIterable, Identifiable, Codable {
+    case fft = "FFT"
+    case matrixPencil = "Matrix pencil"
+    var id: String { rawValue }
+}
+
 enum PencilDisplay: String, CaseIterable, Identifiable, Codable {
     case pseudospectrum = "Pseudospectrum"
     case amplitudeWeighted = "Amplitude-weighted lines"
@@ -98,6 +105,22 @@ struct RadarParams: Equatable, Codable {
     var rdSuperRes: RDSuperRes = .both   // range-Doppler: FFT or matrix pencil super-resolution
     var rdOrderRule: PencilOrderRule = .ester   // range-Doppler pencil: model order rule
     var rdShowScatterers = false     // range-Doppler: mark the counted scatterers with ×
+    // Doppler vs. time (unmodulated CW), after read_data_doppler.m
+    var dtDwellMs: Double = 250      // Tp = 0.250 s per Doppler spectrum
+    var dtCarrierMHz: Double = 2590  // fc (VCO Vtune at +5 V; 2495 MHz at +3.2 V stays in the ISM band)
+    var dtZeroPad = 4                // zpad = 8*N/2 = 4N
+    var dtWindow: WindowType = .rect
+    var dtSVA = false
+    var dtPGA = false
+    var dtPGAMinVelocity: Double = 1 // PGA ignores slower returns (clutter near zero Doppler), m/s
+    var dtMethod: DTMethod = .fft
+    var dtOrderRule: PencilOrderRule = .ester
+    var dtMaxTargets = 8
+    var dtPencilDisplay: PencilDisplay = .pseudospectrum
+    var dtMaxVelocity: Double = 40   // xlim([0 40])
+    var dtDbRange: Double = 35       // imagesc(..., [-35, 0])
+    var dtSubtractMean = true        // sif = sif - mean(s)
+    var dtHistorySeconds: Double = 60   // live history kept
 }
 
 /// Quantities that follow from the settings and the sample rate.

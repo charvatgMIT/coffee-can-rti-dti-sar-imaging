@@ -1,3 +1,4 @@
+import AVFoundation
 import Accelerate
 import AppKit
 import SwiftUI
@@ -6,20 +7,24 @@ import SwiftUI
 struct CoffeeCanRadarApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var model = RadarModel()
+    @StateObject private var sarModel = SARModel()
 
     init() {
         CommandLineTools.handleArguments()
+        SARDumpTool.runIfRequested()
     }
 
     var body: some Scene {
-        WindowGroup("Coffee Can Radar RTI") {
+        WindowGroup(AboutInfo.appName) {
             ContentView()
                 .environmentObject(model)
+                .environmentObject(sarModel)
                 .frame(minWidth: 1150, minHeight: 780)
+                .onAppear { SnapshotTool.scheduleIfRequested(model: model, sar: sarModel) }
         }
         .commands {
             CommandGroup(replacing: .appInfo) {
-                Button("About Coffee Can Radar RTI") { AboutInfo.showPanel(appName: "Coffee Can Radar RTI") }
+                Button("About \(AboutInfo.appName)") { AboutInfo.showPanel(appName: AboutInfo.appName) }
             }
         }
     }
@@ -30,8 +35,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 /// Headless checks, run from Terminal:
-///   CoffeeCanRadarRTI.app/Contents/MacOS/CoffeeCanRadarRTI --list-devices
-///   CoffeeCanRadarRTI.app/Contents/MacOS/CoffeeCanRadarRTI --selftest
+///   "Coffee Can RTI DTI SAR Imaging.app/Contents/MacOS/Coffee Can RTI DTI SAR Imaging" --list-devices
+///   "Coffee Can RTI DTI SAR Imaging.app/Contents/MacOS/Coffee Can RTI DTI SAR Imaging" --selftest
 enum CommandLineTools {
     static func handleArguments() {
         let args = CommandLine.arguments
@@ -43,6 +48,9 @@ enum CommandLineTools {
         }
         if args.contains("--selftest") {
             exit(selfTest() ? 0 : 1)
+        }
+        if let i = args.firstIndex(of: "--doppler-dump"), i + 2 < args.count {
+            exit(dopplerDump(wav: args[i + 1], out: args[i + 2]) ? 0 : 1)
         }
     }
 
@@ -356,17 +364,149 @@ enum CommandLineTools {
                          pass ? "PASS" : "FAIL", peaks.map { String(format: "%.2f", $0) }.joined(separator: ", "), order, ms))
         }
 
+        ok = dopplerSelfTest() && ok
         print(ok ? "ALL PASS" : "SOME CHECKS FAILED")
         return ok
+    }
+
+    /// Doppler vs. time (CW): velocity scale and level, SVA sidelobes, matrix pencil resolution, PGA.
+    static func dopplerSelfTest() -> Bool {
+        var ok = true
+        let fs = 44100.0
+        var p = RadarParams()
+        func run(_ p: RadarParams, _ sig: (Double) -> Double) -> (row: DTRow, g: DTGeometry) {
+            let s = DTSettings(p), g = DTGeometry(s, fs: fs)
+            var rng = SystemRandomNumberGenerator()
+            var x = (0..<g.n).map { sig(Double($0) / fs) + 1e-4 * Double.random(in: -1...1, using: &rng) }
+            let mean = x.reduce(0, +) / Double(x.count)
+            for i in x.indices { x[i] -= mean }
+            return (DopplerTimeDSP().process(x, s: s, g: g), g)
+        }
+        let lam = speedOfLight / (p.dtCarrierMHz * 1e6)
+        func tone(_ v: Double, _ a: Double = 0.1) -> (Double) -> Double { { t in a * cos(2 * .pi * 2 * v / lam * t + 0.3) } }
+        let cell = lam / (2 * p.dtDwellMs / 1000)     // velocity resolution
+
+        // 1. FFT: a 15 m/s tone of amplitude 0.1 at 15 m/s and -20 dB
+        let (r1, g1) = run(p, tone(15))
+        let pk = dtPeak(r1.db, mpsPerCol: g1.mpsPerCol, minVelocity: 1)
+        let pass1 = pk.map { abs($0.velocity - 15) < 0.02 && abs($0.db + 20) < 0.3 } ?? false
+        print(String(format: "%@ Doppler-time FFT: peak %.3f m/s at %.2f dB (expect 15.000, -20.00), %d bins of %.4f m/s, N = %d",
+                     pass1 ? "PASS" : "FAIL", pk?.velocity ?? 0, pk?.db ?? 0, g1.cols, g1.mpsPerCol, g1.n))
+        ok = ok && pass1
+
+        // 2. SVA: sidelobes beyond 2 resolution cells
+        func sidelobe(_ r: DTRow, _ g: DTGeometry) -> Double {
+            let peak = r.db.max()!
+            let far = r.db.indices.filter { abs(Double($0) * g.mpsPerCol - 15) > 2 * cell && Double($0) * g.mpsPerCol > 1 }
+            return Double(far.map { r.db[$0] }.max()! - peak)
+        }
+        var ps = p; ps.dtSVA = true
+        let rect = sidelobe(r1, g1), (r2, g2) = run(ps, tone(15)), sva = sidelobe(r2, g2)
+        let pk2 = dtPeak(r2.db, mpsPerCol: g2.mpsPerCol, minVelocity: 1)
+        let pass2 = sva < -30 && rect > -20 && abs((pk2?.db ?? 0) + 20) < 0.3
+        print(String(format: "%@ Doppler-time SVA: sidelobes beyond 2 cells %.1f dB (rectangular %.1f dB), peak %.2f dB",
+                     pass2 ? "PASS" : "FAIL", sva, rect, pk2?.db ?? 0))
+        ok = ok && pass2
+
+        // 3. Matrix pencil: two movers 0.5 resolution cells apart
+        var pm = p; pm.dtMethod = .matrixPencil
+        let v1 = 15.0, v2 = 15 + 0.5 * cell
+        let two: (Double) -> Double = { t in tone(v1)(t) + 0.1 * cos(2 * .pi * 2 * v2 / lam * t + 1.9) }
+        let t0 = DispatchTime.now().uptimeNanoseconds
+        let (r3, _) = run(pm, two)
+        let ms = Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e6
+        let found = r3.lines.filter { $0.db > -30 }.map(\.velocity).sorted()
+        let pass3 = found.count == 2 && abs(found[0] - v1) < 0.02 && abs(found[1] - v2) < 0.02
+        print(String(format: "%@ Doppler-time matrix pencil: %@ m/s (expect %.3f and %.3f, 0.5 cell apart), order %d, %.1f ms",
+                     pass3 ? "PASS" : "FAIL", found.map { String(format: "%.3f", $0) }.joined(separator: ", "), v1, v2, r3.order ?? 0, ms))
+        ok = ok && pass3
+
+        // 4. PGA: a mover accelerating at 8 m/s^2 (smeared over ~9 cells) is refocused at its mean speed
+        let acc = 8.0, tp = p.dtDwellMs / 1000
+        let accel: (Double) -> Double = { t in 0.1 * cos(2 * .pi * 2 / lam * (15 * t + 0.5 * acc * (t - tp / 2) * (t - tp / 2)) + 0.3) }
+        let (r4, g4) = run(p, accel)
+        p.dtPGA = true
+        let (r5, g5) = run(p, accel)
+        let off = dtPeak(r4.db, mpsPerCol: g4.mpsPerCol, minVelocity: 1), on = dtPeak(r5.db, mpsPerCol: g5.mpsPerCol, minVelocity: 1)
+        let pass4 = r5.pga == true && (on?.db ?? -99) > -21 && (on?.db ?? -99) - (off?.db ?? 0) > 5 && abs((on?.velocity ?? 0) - 15) < 0.05
+        print(String(format: "%@ Doppler-time PGA: accelerating mover %.2f dB at %.2f m/s without, %.2f dB at %.3f m/s with PGA (expect -20, 15.000)",
+                     pass4 ? "PASS" : "FAIL", off?.db ?? 0, off?.velocity ?? 0, on?.db ?? 0, on?.velocity ?? 0))
+        ok = ok && pass4
+
+        // 5. Live path: 3 s of a 22 m/s tone on the right input, in 1024-sample blocks at 48 kHz
+        do {
+            let eng = DopplerTimeEngine()
+            var snap: DTSnapshot?
+            eng.onSnapshot = { snap = $0 }
+            eng.request(RadarParams()); eng.applyPending()
+            eng.startLive(fs: 48000)
+            var start = 0
+            while start < 3 * 48000 {
+                let r = (0..<1024).map { k in Float(0.2 * cos(2 * .pi * 2 * 22 / lam * Double(start + k) / 48000)) }
+                eng.push([Float](repeating: 0, count: 1024), r)
+                start += 1024
+            }
+            let rows = snap?.rows.count ?? 0
+            let v = snap.flatMap { s in s.rows.last.flatMap { dtPeak($0, mpsPerCol: s.mpsPerCol, minVelocity: 1) } }
+            let pass5 = rows == 12 && abs((v?.velocity ?? 0) - 22) < 0.02
+            print(String(format: "%@ Doppler-time live: %d dwells from 3 s (expect 12), newest peak %.3f m/s (expect 22.000)",
+                         pass5 ? "PASS" : "FAIL", rows, v?.velocity ?? 0))
+            ok = ok && pass5
+        }
+        return ok
+    }
+
+    /// `--doppler-dump <wav> <out.f32>`: Doppler vs. time of a recording with the saved settings
+    /// (MIT defaults), written as float32 rows of dB relative to the strongest cell.
+    static func dopplerDump(wav: String, out: String) -> Bool {
+        let model = RadarModel.loadParamsForTools()
+        var p = model
+        let env = ProcessInfo.processInfo.environment
+        if env["DT_DEFAULTS"] != nil { p = RadarParams() }
+        if env["DT_MP"] != nil { p.dtMethod = .matrixPencil }
+        if env["DT_SVA"] != nil { p.dtSVA = true }
+        if env["DT_PGA"] != nil { p.dtPGA = true }
+        if let z = env["DT_ZPAD"].flatMap(Int.init) { p.dtZeroPad = z }
+        if let r = env["DT_RULE"] { p.dtOrderRule = r == "gap" ? .gap : r == "threshold" ? .threshold : .ester }
+        if let t = env["DT_ESTER"].flatMap(Double.init) { p.esterThreshold = t }
+        guard let file = try? AVAudioFile(forReading: URL(fileURLWithPath: wav)),
+              let buf = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: AVAudioFrameCount(file.length)),
+              (try? file.read(into: buf)) != nil, let ch = buf.floatChannelData else { print("can't read \(wav)"); return false }
+        let n = Int(buf.frameLength)
+        let left = Array(UnsafeBufferPointer(start: ch[0], count: n))
+        let right = buf.format.channelCount > 1 ? Array(UnsafeBufferPointer(start: ch[1], count: n)) : []
+        let eng = DopplerTimeEngine()
+        var snap: DTSnapshot?
+        eng.onSnapshot = { snap = $0 }
+        eng.request(p)
+        eng.applyPending()
+        let t0 = DispatchTime.now().uptimeNanoseconds
+        eng.loadFile(name: wav, left: left, right: right, fs: file.processingFormat.sampleRate)
+        let secs = Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e9
+        guard let s = snap else { return false }
+        var data = Data()
+        for r in s.rows { for v in r { var x = v - s.maxDB; data.append(Data(bytes: &x, count: 4)) } }
+        try? data.write(to: URL(fileURLWithPath: out))
+        let peaks = s.rows.prefix(10).map { dtPeak($0, mpsPerCol: s.mpsPerCol, minVelocity: 0).map { String(format: "%.3f", $0.velocity) } ?? "-" }
+        print(String(format: "%d rows x %d cols, %.5f m/s per col, max %.2f dB, %.2f s total (%.2f ms/dwell avg), order %@, PGA %d/%d",
+                     s.rows.count, s.cols, s.mpsPerCol, s.maxDB, secs, s.msPerDwell ?? 0, s.medianOrder.map { String(format: "%.0f", $0) } ?? "-", s.pgaApplied, s.pgaTried))
+        print("peak velocity, first rows: " + peaks.joined(separator: " "))
+        if p.dtMethod == .matrixPencil {
+            var hist: [Int: Int] = [:]
+            for l in s.lines { hist[l.count, default: 0] += 1 }
+            print("poles in band per dwell: " + hist.keys.sorted().map { "\($0):\(hist[$0]!)" }.joined(separator: " "))
+        }
+        return true
     }
 }
 
 /// `--snapshot <file.png>`: after 6 s, render the window contents to a PNG and quit
 /// (used with `--simulate` to check the UI without screen-recording access).
 enum SnapshotTool {
-    static func scheduleIfRequested(model: RadarModel) {
+    static func scheduleIfRequested(model: RadarModel, sar: SARModel) {
         let args = CommandLine.arguments
-        guard let i = args.firstIndex(of: "--snapshot"), i + 1 < args.count else { return }
+        // with --open-sar, the SAR model takes the snapshot once its image is formed
+        guard !args.contains("--open-sar"), let i = args.firstIndex(of: "--snapshot"), i + 1 < args.count else { return }
         let url = URL(fileURLWithPath: args[i + 1])
         DispatchQueue.main.asyncAfter(deadline: .now() + 6) {
             MainActor.assumeIsolated {
@@ -375,7 +515,7 @@ enum SnapshotTool {
                 let view = Group {
                     if how { HowItWorksRTIContent().padding(16).frame(width: 1100).background(Color.white) }
                     else { ContentView().frame(width: 1400, height: 900) }
-                }.environmentObject(model)
+                }.environmentObject(model).environmentObject(sar)
                 let renderer = ImageRenderer(content: view)
                 renderer.scale = 1
                 if let tiff = renderer.nsImage?.tiffRepresentation,
