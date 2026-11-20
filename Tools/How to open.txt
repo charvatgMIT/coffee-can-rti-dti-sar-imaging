@@ -1,0 +1,27 @@
+Coffee Can RTI DTI SAR Imaging
+==============================
+
+Install: drag "Coffee Can RTI DTI SAR Imaging" onto the Applications folder.
+Needs macOS 14 (Sonoma) or later, on an Apple Silicon or Intel Mac.
+
+First launch
+------------
+This copy is not signed with an Apple Developer ID, so the first time you open it
+macOS says it can't verify the app. To allow it once:
+
+  1. Double-click the app in Applications. When macOS refuses, click Done.
+  2. Open System Settings > Privacy & Security, scroll down to Security, and click
+     "Open Anyway" next to "Coffee Can RTI DTI SAR Imaging". Confirm with your password.
+  3. When the app asks for microphone access, click Allow: it reads the radar's sync
+     and IF signals through the USB audio interface (e.g. the Behringer UCA222).
+
+After that it opens normally.
+
+(Alternative, in Terminal:  xattr -dr com.apple.quarantine "/Applications/Coffee Can RTI DTI SAR Imaging.app")
+
+Using it
+--------
+Plug in the audio interface (sync and IF on its two inputs) and press Start for live
+radar. SAR imaging opens .wav recordings (File > Open, or the Open button on that tab).
+The "How it works" tabs and the README explain the processing:
+https://github.com/charvatgMIT/coffee-can-rti-dti-sar-imaging

@@ -71,6 +71,20 @@ reference only and is no longer updated.
 - The radar's sync output and IF output connected to the two inputs of a stereo USB audio
   interface.
 
+## Install on a Mac without Xcode
+
+Download the disk image (`Coffee-Can-RTI-DTI-SAR-Imaging-<version>.dmg`), open it and drag the app
+onto Applications. It runs on Apple Silicon and Intel Macs with macOS 14 or later.
+
+The app isn't signed with an Apple Developer ID yet, so the first time it's opened macOS says it
+can't verify it. Open System Settings → Privacy & Security, click **Open Anyway** next to the app
+and confirm; then allow microphone access (the radar's sync and IF come in through the audio
+interface). "How to open.txt" on the disk image has the same steps.
+
+To make the disk image: `Tools/make_release.sh` (needs Xcode; writes `build/dist/`). With an Apple
+Developer ID it can also sign and notarize the app so it opens without the warning; see the
+comments at the top of the script.
+
 ## Build and run
 
 1. Open `CoffeeCanRadar.xcodeproj` in Xcode.
