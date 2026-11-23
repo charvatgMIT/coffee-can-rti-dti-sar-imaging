@@ -12,6 +12,7 @@ struct CoffeeCanRadarApp: App {
     init() {
         CommandLineTools.handleArguments()
         SARDumpTool.runIfRequested()
+        SARCompareTool.runIfRequested()
     }
 
     var body: some Scene {
@@ -48,6 +49,9 @@ enum CommandLineTools {
         }
         if args.contains("--selftest") {
             exit(selfTest() ? 0 : 1)
+        }
+        if let i = args.firstIndex(of: "--rti-dump"), i + 2 < args.count {
+            exit(rtiDump(wav: args[i + 1], out: args[i + 2]) ? 0 : 1)
         }
         if let i = args.firstIndex(of: "--doppler-dump"), i + 2 < args.count {
             exit(dopplerDump(wav: args[i + 1], out: args[i + 2]) ? 0 : 1)
@@ -454,6 +458,52 @@ enum CommandLineTools {
             ok = ok && pass5
         }
         return ok
+    }
+
+    /// `--rti-dump <wav> <prefix>`: runs a stereo recording through the RTI processor with the default
+    /// settings, overridden by the JSON in $RTI_PARAMS, in 4096-sample blocks. Writes <prefix>.rows.f32 (every
+    /// pulse's range profile, dB) and, if enough pulses, <prefix>.rd.f32 (the range-Doppler map of the newest
+    /// pulses, dB, [row][range bin]). Used to check the web version against this app.
+    static func rtiDump(wav: String, out: String) -> Bool {
+        var p = RadarParams()
+        if let js = ProcessInfo.processInfo.environment["RTI_PARAMS"],
+           let over = try? JSONSerialization.jsonObject(with: Data(js.utf8)) as? [String: Any],
+           let defData = try? JSONEncoder().encode(p),
+           var merged = try? JSONSerialization.jsonObject(with: defData) as? [String: Any] {
+            merged.merge(over) { _, new in new }
+            if let md = try? JSONSerialization.data(withJSONObject: merged), let q = try? JSONDecoder().decode(RadarParams.self, from: md) { p = q }
+            else { print("bad RTI_PARAMS"); return false }
+        }
+        guard let file = try? AVAudioFile(forReading: URL(fileURLWithPath: wav)),
+              let buf = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: AVAudioFrameCount(file.length)),
+              (try? file.read(into: buf)) != nil, let ch = buf.floatChannelData, buf.format.channelCount > 1 else { print("can't read \(wav)"); return false }
+        let total = Int(buf.frameLength), fs = file.processingFormat.sampleRate
+        let proc = RadarProcessor()
+        proc.update(params: p, fs: fs)
+        var rows: [[Float]] = []
+        var start = 0
+        let t0 = DispatchTime.now().uptimeNanoseconds
+        while start < total {
+            let n = min(4096, total - start)
+            proc.push(Array(UnsafeBufferPointer(start: ch[0] + start, count: n)), Array(UnsafeBufferPointer(start: ch[1] + start, count: n)))
+            rows += proc.takeSnapshot().newRows
+            start += n
+        }
+        let secs = Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e9
+        var data = Data()
+        for r in rows { r.withUnsafeBufferPointer { data.append(Data(buffer: $0)) } }
+        try? data.write(to: URL(fileURLWithPath: out + ".rows.f32"))
+        let d = proc.d
+        print(String(format: "%d pulses x %d bins (N %d, nfft %d, %.4f m/bin, nBins %d), %.2f s", rows.count, rows.first?.count ?? 0, d.n, d.nfft, d.metersPerBin, d.nBins, secs))
+        if p.rdEnabled {
+            let log2m = max(3, min(Int(log2(Double(max(8, p.rdPulses)))), 8)), m = 1 << log2m
+            if let input = proc.makeRangeDopplerInput(m: m, log2m: log2m), let snap = RangeDopplerBuilder.compute(input) {
+                snap.db.withUnsafeBufferPointer { try? Data(buffer: $0).write(to: URL(fileURLWithPath: out + ".rd.f32")) }
+                print(String(format: "range-Doppler %d rows x %d bins, %.0f ms, orders %@/%@, %d scatterers", snap.rows, snap.db.count / max(1, snap.rows), snap.ms,
+                             snap.dopplerOrder.map { String(format: "%.0f", $0) } ?? "-", snap.rangeOrder.map { String(format: "%.0f", $0) } ?? "-", snap.scatterers.count))
+            }
+        }
+        return true
     }
 
     /// `--doppler-dump <wav> <out.f32>`: Doppler vs. time of a recording with the saved settings

@@ -33,6 +33,7 @@ struct SARPane: View {
                 default: SARPlot()
                 }
             }
+            if tab <= 2 { ColorScaleSliders() }
         }
     }
 
@@ -58,7 +59,39 @@ struct SARPane: View {
         case 3, 4: return ""
         default: top = r.image.maxDB
         }
-        return String(format: "colour %.0f…%.0f dB", top - model.params.dbRange, top)
+        let t = top + model.params.colorTopOffsetDB
+        return String(format: "colour %.0f…%.0f dB", t - model.params.dbRange, t)
+    }
+}
+
+/// Dynamic range and the top of the colour scale (relative to the strongest pixel), under the SAR plots.
+/// Both only recolour the images; nothing is reprocessed.
+struct ColorScaleSliders: View {
+    @EnvironmentObject var model: SARModel
+    @AppStorage("sarTab") private var tab = 0
+
+    var body: some View {
+        let p = model.params, r = model.result
+        let peak: Double? = r.flatMap { r in tab == 1 ? r.rangeProfiles.maxDB : tab == 2 ? r.kSpace?.maxDB : r.image.maxDB }
+        let off = p.colorTopOffsetDB
+        let rel = off == 0 ? "strongest pixel" : String(format: "%+.0f dB re strongest", off)
+        HStack(spacing: 8) {
+            Text("Dynamic range").foregroundStyle(.secondary)
+            Slider(value: Binding(get: { model.params.dbRange }, set: { model.params.dbRange = $0.rounded() }), in: 10...80)
+                .frame(maxWidth: 260)
+            Text("\(Int(p.dbRange)) dB").monospacedDigit().frame(width: 44, alignment: .trailing)
+            Spacer(minLength: 24)
+            Text("Max value").foregroundStyle(.secondary)
+            Slider(value: Binding(get: { model.params.colorTopOffsetDB }, set: { model.params.colorTopOffsetDB = $0.rounded() }), in: -40...10)
+                .frame(maxWidth: 260)
+            Text(peak.map { String(format: "%.0f dB (%@)", $0 + off, rel) } ?? rel).monospacedDigit().frame(minWidth: 170, alignment: .leading)
+            Button("Auto") { model.params.colorTopOffsetDB = 0 }
+                .disabled(off == 0)
+                .help("Put the top of the colour scale back on the strongest pixel")
+            Spacer()
+        }
+        .font(.caption)
+        .controlSize(.small)
     }
 }
 
@@ -112,7 +145,7 @@ struct SARPlot: View {
             strokeBorder(c, ax)
             if let r {
                 drawColorBar(c, rect: CGRect(x: ax.rect.maxX + 14, y: ax.rect.minY, width: 12, height: ax.rect.height),
-                             top: r.image.maxDB, range: p.dbRange)
+                             top: r.image.maxDB + p.colorTopOffsetDB, range: p.dbRange)
             }
         }
     }
@@ -131,7 +164,7 @@ struct ProfilePlot: View {
             strokeBorder(ctx, ax)
             if let r {
                 drawColorBar(ctx, rect: CGRect(x: ax.rect.maxX + 14, y: ax.rect.minY, width: 12, height: ax.rect.height),
-                             top: r.rangeProfiles.maxDB, range: p.dbRange)
+                             top: r.rangeProfiles.maxDB + p.colorTopOffsetDB, range: p.dbRange)
             }
         }
     }
@@ -154,7 +187,7 @@ struct KSpacePlot: View {
             strokeBorder(ctx, ax)
             if let k = r?.kSpace {
                 drawColorBar(ctx, rect: CGRect(x: ax.rect.maxX + 14, y: ax.rect.minY, width: 12, height: ax.rect.height),
-                             top: k.maxDB, range: p.dbRange)
+                             top: k.maxDB + p.colorTopOffsetDB, range: p.dbRange)
             }
         }
     }

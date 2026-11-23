@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Coffee Can Radar</title>
+<link rel="icon" href="icon.png">
+<link rel="stylesheet" href="src/style.css">
+</head>
+<body>
+<div id="app">
+  <aside id="sidebar"></aside>
+  <main id="main">
+    <div id="toolbar">
+      <img src="icon.png" alt="" class="logo">
+      <span class="appname">Coffee Can Radar <b>RTI · DTI · SAR</b></span>
+      <select id="device" title="Audio input"></select>
+      <button id="refresh" title="Refresh the list of audio inputs">⟳</button>
+      <span class="spacer"></span>
+      <button id="start" class="primary">▶ Start</button>
+      <button id="simulate">Simulate</button>
+      <button id="openfile" title="Play a stereo .wav recording (sync and IF) through the processing">Open recording…</button>
+      <button id="sar-open-tb" class="primary" hidden>Open SAR recording…</button>
+      <button id="sar-process-tb" hidden>▶ Process</button>
+      <button id="pause" hidden>Pause</button>
+      <button id="stop" hidden>■ Stop</button>
+      <input type="file" id="fileinput" accept=".wav,audio/wav,audio/x-wav" hidden>
+    </div>
+    <div id="stats"></div>
+    <div id="status" class="status"></div>
+    <div id="suggestion" class="suggestion" hidden></div>
+    <div id="tabs" role="tablist">
+      <button data-tab="radar" class="active">Radar (RTI)</button>
+      <button data-tab="doppler">Doppler vs. time</button>
+      <button data-tab="sar">SAR imaging</button>
+      <button data-tab="diag">Diagnostics</button>
+      <button data-tab="how">How it works</button>
+    </div>
+    <section id="tab-radar" class="tab">
+      <div class="row slider-row">
+        <label>Max range</label>
+        <input type="range" id="maxrange" min="0" max="1" step="0.001">
+        <span id="maxrange-val" class="num"></span>
+        <button id="maxrange-full" class="small">Full</button>
+      </div>
+      <div class="card grow">
+        <div class="card-head"><span>Range vs. time intensity (newest at top)</span><span id="rti-detail" class="num"></span></div>
+        <canvas id="rti"></canvas>
+        <div class="row slider-row small-text">
+          <label>Dynamic range</label><input type="range" id="rti-range" min="10" max="100" step="1"><span id="rti-range-val" class="num"></span>
+          <label>Time span</label><input type="range" id="rti-span" min="0" max="1" step="0.001"><span id="rti-span-val" class="num"></span>
+        </div>
+      </div>
+      <div class="card grow" id="rd-card">
+        <div class="card-head"><span id="rd-title"></span><span id="rd-detail" class="num"></span></div>
+        <canvas id="rd"></canvas>
+        <div class="row slider-row small-text">
+          <label>Dynamic range</label><input type="range" id="rd-range" min="10" max="100" step="1"><span id="rd-range-val" class="num"></span>
+        </div>
+      </div>
+      <div class="card grow">
+        <div class="card-head"><span id="profile-title"></span><span id="profile-detail" class="num"></span></div>
+        <canvas id="profile"></canvas>
+      </div>
+    </section>
+    <section id="tab-doppler" class="tab" hidden>
+      <div class="row">
+        <button id="dt-open">Open recording…</button>
+        <button id="dt-live">Live input</button>
+        <span id="dt-source" class="status"></span>
+        <span class="spacer"></span>
+        <span id="dt-busy" class="status" hidden>Processing…</span>
+      </div>
+      <div class="row">
+        <span class="status">IF input</span>
+        <div id="dt-if" class="segmented small"><button data-v="false">Right</button><button data-v="true">Left</button></div>
+        <button id="dt-swap" class="small">⇄ Swap channels</button>
+        <span id="dt-levels" class="status num"></span>
+      </div>
+      <div id="dt-warn" class="suggestion" hidden></div>
+      <div class="card grow" style="flex: 2">
+        <div class="card-head"><span id="dt-title"></span><span id="dt-detail" class="num"></span></div>
+        <canvas id="dti"></canvas>
+        <div class="row slider-row small-text">
+          <label>Dynamic range</label><input type="range" id="dt-range" min="10" max="80" step="1"><span id="dt-range-val" class="num"></span>
+          <label>Max velocity</label><input type="range" id="dt-vmax" min="5" max="100" step="1"><span id="dt-vmax-val" class="num"></span>
+        </div>
+      </div>
+      <div class="card grow">
+        <div class="card-head"><span id="dt-spec-title"></span><span id="dt-spec-detail" class="num"></span></div>
+        <canvas id="dt-spec"></canvas>
+      </div>
+    </section>
+    <section id="tab-sar" class="tab" hidden>
+      <div class="row">
+        <div id="sar-sub" class="segmented small">
+          <button data-v="image" class="active">SAR image</button><button data-v="profiles">Range profiles</button><button data-v="kspace">K-space</button><button data-v="autofocus">Autofocus</button>
+        </div>
+        <span class="spacer"></span>
+        <span id="sar-busy" class="status" hidden>Processing…</span>
+        <span id="sar-file" class="status"></span>
+      </div>
+      <div id="sar-status" class="status"></div>
+      <div class="card grow">
+        <div class="card-head"><span id="sar-title"></span><span id="sar-detail" class="num"></span></div>
+        <canvas id="sar-canvas"></canvas>
+        <div id="sar-sliders" class="row slider-row small-text">
+          <label>Dynamic range</label><input type="range" id="sar-range" min="10" max="80" step="1"><span id="sar-range-val" class="num"></span>
+          <label>Max value</label><input type="range" id="sar-top" min="-40" max="10" step="1"><span id="sar-top-val" class="num"></span>
+          <button id="sar-top-auto" class="small" title="Put the top of the colour scale back on the strongest pixel">Auto</button>
+        </div>
+        <div id="sar-af" class="row grow" hidden style="flex-direction: column; align-items: stretch;">
+          <div class="card-head"><span id="sar-af1-title"></span></div><canvas id="sar-af1"></canvas>
+          <div class="card-head"><span id="sar-af2-title"></span></div><canvas id="sar-af2"></canvas>
+        </div>
+      </div>
+      <input type="file" id="sar-fileinput" accept=".wav,audio/wav,audio/x-wav" hidden>
+    </section>
+    <section id="tab-diag" class="tab" hidden>
+      <div class="card grow">
+        <div class="card-head"><span>Last triggered pulse: sync (blue) / IF (orange)</span></div>
+        <canvas id="scope"></canvas>
+      </div>
+      <div class="row grow">
+        <div class="card grow" id="pga-card">
+          <div class="card-head"><span id="pga-title">PGA phase error</span><span id="pga-detail" class="num"></span></div>
+          <div id="pga-switch" class="segmented small" hidden><button data-v="range" class="active">Range (fast time)</button><button data-v="doppler">Doppler (slow time)</button></div>
+          <canvas id="pga"></canvas>
+        </div>
+        <div class="card grow">
+          <div class="card-head"><span>Rising-edge zoom: samples ● and interpolation</span><span id="edge-detail" class="num"></span></div>
+          <canvas id="edge"></canvas>
+        </div>
+      </div>
+    </section>
+    <section id="tab-how" class="tab" hidden></section>
+  </main>
+</div>
+<script src="src/dsp-core.js"></script>
+<script src="src/pencil.js"></script>
+<script src="src/rangedoppler.js"></script>
+<script src="src/processor.js"></script>
+<script src="src/doppler.js"></script>
+<script src="src/sar.js"></script>
+<script src="src/plots.js"></script>
+<script src="src/app.js"></script>
+</body>
+</html>

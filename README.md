@@ -71,6 +71,13 @@ reference only and is no longer updated.
 - The radar's sync output and IF output connected to the two inputs of a stereo USB audio
   interface.
 
+## Web version (Windows, Mac, Linux)
+
+A web version with all three modes (RTI, Doppler vs. time and SAR imaging) is in
+[`web/`](web/README.md): one HTML file (`web/dist/coffee-can-radar.html`) that runs in Chrome, Edge,
+Firefox or Safari and reads the UCA222 directly. It runs the same processing as this app, checked
+against it pulse by pulse, dwell by dwell and pixel by pixel.
+
 ## Install on a Mac without Xcode
 
 Download the disk image (`Coffee-Can-RTI-DTI-SAR-Imaging-<version>.dmg`), open it and drag the app
@@ -106,5 +113,6 @@ The app can check its own processing without the radar:
 Other options: `--list-devices` lists audio inputs, `--simulate` starts with the built-in
 simulator, `--open-doppler <file.wav>` opens a CW recording in the Doppler vs. time tab, and
 `--open-sar <file.wav>` opens a SAR recording, `--dump <file.wav> <dir>` writes the parsed SAR
-data, and `--doppler-dump <file.wav> <out.f32>` writes its Doppler vs. time rows (dB re the strongest
+data, and `--rti-dump` and `--sar-dump` write the RTI and SAR outputs for the web version's checks, and
+`--doppler-dump <file.wav> <out.f32>` writes its Doppler vs. time rows (dB re the strongest
 cell, float32) for comparison with MATLAB.

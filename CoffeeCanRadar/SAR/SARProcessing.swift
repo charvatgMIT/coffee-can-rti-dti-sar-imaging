@@ -64,6 +64,7 @@ struct SARParams: Codable, Equatable {
     var blankGratingLobes = true   // blank angles where the aperture's grating lobes (aliases) can land
     var scaleBySlantRange = true   // use the true range from the aperture centre, not downrange (MIT's script)
     var dbRange: Double = 40       // colour scale below the image maximum
+    var colorTopOffsetDB: Double = 0   // display only: top of the colour scale relative to the strongest pixel
     var algorithm: SARAlgorithm = .backprojection
     var bpNfft = 8192              // backprojection: zero-padded range-profile FFT size (data.Nfft)
     var bpPixelFt: Double = 0.25   // backprojection: image pixel spacing

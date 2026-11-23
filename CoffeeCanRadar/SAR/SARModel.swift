@@ -9,7 +9,7 @@ final class SARModel: ObservableObject {
         didSet {
             guard params != oldValue else { return }
             if let d = try? JSONEncoder().encode(params) { UserDefaults.standard.set(d, forKey: "SARParams") }
-            if params.dbRange != oldValue.dbRange { recolor() }
+            if params.dbRange != oldValue.dbRange || params.colorTopOffsetDB != oldValue.colorTopOffsetDB { recolor() }
         }
     }
     @Published private(set) var fileURL: URL?
@@ -149,9 +149,9 @@ final class SARModel: ObservableObject {
     }
 
     private static func render(_ r: SARResult, _ p: SARParams) -> (CGImage?, CGImage?, CGImage?) {
-        (makeImage(r.image.db, rows: r.image.rows, cols: r.image.cols, top: r.image.maxDB, range: p.dbRange, flip: true),
-         makeImage(r.rangeProfiles.db, rows: r.rangeProfiles.rows, cols: r.rangeProfiles.cols, top: r.rangeProfiles.maxDB, range: p.dbRange, flip: false),
-         r.kSpace.flatMap { makeImage($0.db, rows: $0.rows, cols: $0.cols, top: $0.maxDB, range: p.dbRange, flip: false) })
+        (makeImage(r.image.db, rows: r.image.rows, cols: r.image.cols, top: r.image.maxDB + p.colorTopOffsetDB, range: p.dbRange, flip: true),
+         makeImage(r.rangeProfiles.db, rows: r.rangeProfiles.rows, cols: r.rangeProfiles.cols, top: r.rangeProfiles.maxDB + p.colorTopOffsetDB, range: p.dbRange, flip: false),
+         r.kSpace.flatMap { makeImage($0.db, rows: $0.rows, cols: $0.cols, top: $0.maxDB + p.colorTopOffsetDB, range: p.dbRange, flip: false) })
     }
 
     private func setStatus(_ s: String, error: Bool = false) { status = s; statusIsError = error }

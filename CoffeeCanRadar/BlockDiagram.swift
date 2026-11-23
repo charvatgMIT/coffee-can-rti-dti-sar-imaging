@@ -89,6 +89,9 @@ struct DiagramLegend: View {
 enum AboutInfo {
     static let appName = "Coffee Can RTI DTI SAR Imaging"
     static let credit = "Vibe coded by Gregory L. Charvat & Jared Smith based on original Matlab scripts from MIT OCW"
+    /// The SAR backprojection is a port of AFRL's bpBasic.m.
+    static let bpCredit = "SAR backprojection: bpBasic.m by LeRoy Gorham, Air Force Research Laboratory (AFRL); Gorham & Moore, \"SAR image formation toolbox for MATLAB\", SPIE 2010"
+    static let bpURL = URL(string: "https://github.com/bambang/osubp/blob/master/bpBasic.m")!
     static let ocwURL = URL(string: "https://ocw.mit.edu/courses/res-ll-003-build-a-small-radar-system-capable-of-sensing-range-doppler-and-synthetic-aperture-radar-imaging-january-iap-2011/resources/doppler-radar-using-the-coffee-can-radar/")!
 
     /// The date this copy of the app was built (the executable's modification date).
@@ -110,6 +113,10 @@ enum AboutInfo {
         var link = base
         link[.link] = ocwURL
         credits.append(NSAttributedString(string: ocwURL.absoluteString, attributes: link))
+        credits.append(NSAttributedString(string: "\n\n" + bpCredit + "\n", attributes: base))
+        var bpLink = base
+        bpLink[.link] = bpURL
+        credits.append(NSAttributedString(string: bpURL.absoluteString, attributes: bpLink))
         credits.append(NSAttributedString(string: "\n\n" + buildDate, attributes: base))
         NSApp.orderFrontStandardAboutPanel(options: [.applicationName: appName, .credits: credits])
         NSApp.activate(ignoringOtherApps: true)
@@ -126,6 +133,8 @@ struct AboutSection: View {
             LabeledContent("Date", value: AboutInfo.buildDate)
             Text(AboutInfo.credit).font(.callout)
             Link(AboutInfo.ocwURL.absoluteString, destination: AboutInfo.ocwURL).font(.caption)
+            Text(AboutInfo.bpCredit).font(.callout)
+            Link(AboutInfo.bpURL.absoluteString, destination: AboutInfo.bpURL).font(.caption)
         }
     }
 }
@@ -141,6 +150,8 @@ struct AboutCard: View {
             Text(AboutInfo.buildDate).font(.callout).foregroundStyle(.secondary)
             Text(AboutInfo.credit).font(.callout)
             Link(AboutInfo.ocwURL.absoluteString, destination: AboutInfo.ocwURL).font(.caption)
+            Text(AboutInfo.bpCredit).font(.callout)
+            Link(AboutInfo.bpURL.absoluteString, destination: AboutInfo.bpURL).font(.caption)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(10)

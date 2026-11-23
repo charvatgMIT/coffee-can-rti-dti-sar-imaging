@@ -600,6 +600,22 @@ final class RadarProcessor {
               rdFastN == d.n else { return finished }
         rdDirty = false
         rdLastBuild = now
+        guard let input = makeRangeDopplerInput(m: m, log2m: log2m) else { return finished }
+        rdLock.lock(); rdBusy = true; rdLock.unlock()
+        rdQueue.async { [weak self] in
+            let snap = RangeDopplerBuilder.compute(input)
+            guard let self else { return }
+            self.rdLock.lock()
+            self.rdResult = snap.map { (input.generation, $0) }
+            self.rdBusy = false
+            self.rdLock.unlock()
+        }
+        return finished
+    }
+
+    /// The newest `m` pulses as a range-Doppler input (also used by `--rti-dump`, synchronously).
+    func makeRangeDopplerInput(m: Int, log2m: Int) -> RangeDopplerInput? {
+        guard rdCount >= m, rdBins > 0, rdFastN == d.n else { return nil }
         let nr = min(d.nBins, rdBins), n = d.n
         // slow-time block [range bin][pulse] and fast-time block [pulse][sample], oldest pulse first
         var input = RangeDopplerInput(m: m, log2m: log2m, nr: nr, n: n, nfft: d.nfft, metersPerBin: d.metersPerBin,
@@ -621,16 +637,7 @@ final class RadarProcessor {
                 }
             }
         }
-        rdLock.lock(); rdBusy = true; rdLock.unlock()
-        rdQueue.async { [weak self] in
-            let snap = RangeDopplerBuilder.compute(input)
-            guard let self else { return }
-            self.rdLock.lock()
-            self.rdResult = snap.map { (input.generation, $0) }
-            self.rdBusy = false
-            self.rdLock.unlock()
-        }
-        return finished
+        return input
     }
 
     /// Phase gradient autofocus along slow time (Jakowatz/Eichel). Estimates the phase error that every
