@@ -517,6 +517,7 @@ enum CommandLineTools {
         if env["DT_SVA"] != nil { p.dtSVA = true }
         if env["DT_PGA"] != nil { p.dtPGA = true }
         if let z = env["DT_ZPAD"].flatMap(Int.init) { p.dtZeroPad = z }
+        if let o = env["DT_OVERLAP"].flatMap(Double.init) { p.dtOverlap = o }
         if let r = env["DT_RULE"] { p.dtOrderRule = r == "gap" ? .gap : r == "threshold" ? .threshold : .ester }
         if let t = env["DT_ESTER"].flatMap(Double.init) { p.esterThreshold = t }
         guard let file = try? AVAudioFile(forReading: URL(fileURLWithPath: wav)),

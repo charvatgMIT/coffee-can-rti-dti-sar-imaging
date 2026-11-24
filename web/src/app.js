@@ -519,6 +519,8 @@ registerProcessor('ccr-capture', CCRCapture);`;
       { type: 'buttons', buttons: [['+5 V: 2590 MHz', () => setParams({ dtCarrierMHz: 2590 })], ['+3.2 V (ISM): 2495 MHz', () => setParams({ dtCarrierMHz: 2495 })]] },
       { type: 'help', text: dtVCOText },
       { k: 'dtDwellMs', label: 'Dwell Tp (ms)', type: 'num' },
+      { k: 'dtOverlap', label: 'Overlap', type: 'sel', opts: [[0, 'None (MIT)'], [0.5, '50%'], [0.75, '75%'], [0.875, '87.5%']] },
+      { type: 'help', text: () => `A new row every ${(params.dtDwellMs * (1 - params.dtOverlap)).toFixed(0)} ms. Overlapping dwells (a sliding window) make the plot smoother in time and use the samples a tapering window or SVA would otherwise weight down at the dwell edges; each row still spans Tp, so the velocity resolution is unchanged. Costs ${(1 / Math.max(0.0625, 1 - params.dtOverlap)).toFixed(0)}× the processing.` },
       { k: 'dtMaxVelocity', label: 'Max velocity shown (m/s)', type: 'num' },
       { k: 'dtMethod', label: 'Spectrum', type: 'sel', opts: ['FFT', 'Matrix pencil'] },
       { k: 'dtOrderRule', label: 'Model order', type: 'sel', opts: ORDER_RULES_DT, when: dtPencil },
@@ -814,7 +816,7 @@ registerProcessor('ccr-capture', CCRCapture);`;
     const dtRows = [
       [block('Audio input (CW)', `the radar run unmodulated (Vtune fixed, fc = ${p.dtCarrierMHz} MHz): only the IF on the ${ifc} input; no sync needed`, !dfile && source !== 'sim', 'input'),
         block('Recording / simulator', dfile ? `${dt.fileName}, IF channel ${ifc}` : 'a .wav (e.g. MIT\'s "Off of Newton Exit 17.wav"), or the CW simulator', dfile || source === 'sim', 'input')],
-      [block('Dwells', `N = Tp·fs = ${Math.round(p.dtDwellMs / 1000 * d.fs)} samples per Doppler spectrum (Tp = ${p.dtDwellMs} ms)${p.dtSubtractMean ? '; mean subtracted (the whole recording\'s, as MIT\'s script)' : ''}`)],
+      [block('Dwells', `N = Tp·fs = ${Math.round(p.dtDwellMs / 1000 * d.fs)} samples per Doppler spectrum (Tp = ${p.dtDwellMs} ms)${p.dtOverlap > 0 ? `, ${(p.dtOverlap * 100).toFixed(0)}% overlapped: a new row every ${(p.dtDwellMs * (1 - p.dtOverlap)).toFixed(0)} ms` : ''}${p.dtSubtractMean ? '; mean subtracted (the whole recording\'s, as MIT\'s script)' : ''}`)],
       [block('PGA (strongest mover)', 'per dwell: the dominant line\'s phase wander removed, keeping its mean velocity; kept only if sharper', p.dtPGA)],
       [block('FFT', `${p.dtWindow} window, zero pad ${p.dtZeroPad}×`, !dtp && !p.dtSVA),
         block('SVA', 'per-bin weighting between rectangular and Hann', !dtp && p.dtSVA),
@@ -1088,21 +1090,36 @@ registerProcessor('ccr-capture', CCRCapture);`;
   $('dt-vmax').oninput = (e) => setParams({ dtMaxVelocity: Math.round(+e.target.value) });
 
   /** Jet image of the Doppler rows: newest at the top when live, time running down for a recording (MIT's plot). */
+  // Each image row combines perRow dwells (the strongest value per bin), so the image is no taller
+  // than the plot: drawing a taller image drops a different set of rows each time it scrolls, which
+  // flickers. Groups are fixed by the dwell's absolute index, so they don't shift as rows arrive.
+  let dtImagePx = 400, dtSecPerPx = 0.25;
   function buildDTImage() {
     if (!dt || !dt.nRows) { dtImage = null; return; }
-    const { nRows, cols, rows, maxDB } = dt, live = dt.fileName == null;
+    const { nRows, cols, rows, maxDB } = dt, live = dt.fileName == null, first = dt.firstIndex || 0;
+    const spanRows = live ? Math.max(nRows, Math.trunc(params.dtHistorySeconds / dt.hopSeconds)) : nRows;
+    const perRow = Math.max(1, Math.ceil(spanRows / dtImagePx));
+    // fewer rows than pixels: each row repeated a whole number of times (live is drawn one row per pixel)
+    const rep = perRow === 1 ? Math.max(1, Math.floor(dtImagePx / Math.max(1, spanRows))) : 1;
+    dtSecPerPx = perRow * dt.hopSeconds / rep;
+    const g0 = Math.floor(first / perRow), h = Math.floor((first + nRows - 1) / perRow) - g0 + 1;
+    const comb = new Float32Array(h * cols).fill(-Infinity);
+    for (let i = 0; i < nRows; i++) {
+      const gi = Math.floor((first + i) / perRow) - g0, o = gi * cols, src = i * cols;
+      for (let k = 0; k < cols; k++) if (rows[src + k] > comb[o + k]) comb[o + k] = rows[src + k];
+    }
     const range = Math.max(1, params.dtDbRange), lo = maxDB - range, cs = 255 / range;
-    const rgba = new Uint8ClampedArray(nRows * cols * 4);
-    for (let r = 0; r < nRows; r++) {
-      const src = (live ? nRows - 1 - r : r) * cols, dst = r * cols * 4;
+    const hOut = h * rep, rgba = new Uint8ClampedArray(hOut * cols * 4);
+    for (let r = 0; r < hOut; r++) {
+      const gr = Math.floor(r / rep), src = (live ? h - 1 - gr : gr) * cols, dst = r * cols * 4;
       for (let k = 0; k < cols; k++) {
-        const c = Math.max(0, Math.min(255, Math.round((rows[src + k] - lo) * cs))) * 3, o = dst + k * 4;
+        const c = Math.max(0, Math.min(255, Math.round((comb[src + k] - lo) * cs))) * 3, o = dst + k * 4;
         rgba[o] = C.JET[c]; rgba[o + 1] = C.JET[c + 1]; rgba[o + 2] = C.JET[c + 2]; rgba[o + 3] = 255;
       }
     }
     const cv = document.createElement('canvas');
-    cv.width = cols; cv.height = nRows;
-    cv.getContext('2d').putImageData(new ImageData(rgba, cols, nRows), 0, 0);
+    cv.width = cols; cv.height = hOut;
+    cv.getContext('2d').putImageData(new ImageData(rgba, cols, hOut), 0, 0);
     dtImage = cv;
   }
 
@@ -1125,8 +1142,8 @@ registerProcessor('ccr-capture', CCRCapture);`;
     $('dt-live').disabled = !dt || dt.fileName == null;
     $('dt-busy').hidden = !dtBusy;
     let src;
-    if (dt && dt.fileName != null) src = `Recording: ${dt.fileName}, ${(dt.nRows * dt.dwellSeconds).toFixed(1)} s (${dt.nRows} dwells), IF from the ${ifSide} channel`;
-    else if (source === 'live' && dt) src = `Live: IF on the ${ifSide} input · next dwell ${Math.round(100 * dt.waitingSamples / Math.max(1, dt.samplesPerDwell))}%`;
+    if (dt && dt.fileName != null) src = `Recording: ${dt.fileName}, ${(dt.nRows * dt.hopSeconds).toFixed(1)} s (${dt.nRows} dwells), IF from the ${ifSide} channel`;
+    else if (source === 'live' && dt) src = `Live: IF on the ${ifSide} input · next row ${Math.round(100 * dt.waitingSamples / Math.max(1, dt.samplesPerDwell))}%`;
     else if (source === 'sim' && dt) src = `Simulated CW: IF on the ${ifSide} input`;
     else src = 'Live input idle: press Start for the audio interface, Simulate, or open a recording.';
     $('dt-source').textContent = src;
@@ -1149,22 +1166,34 @@ registerProcessor('ccr-capture', CCRCapture);`;
     const i = dtRowIndex(), minV = Math.max(0.5, p.dtPGAMinVelocity);
     const peak = i != null ? dtPeak(dtRow(i), dt.mpsPerCol, minV) : null;
     let when = '';
-    if (i != null) when = dt.fileName != null ? ` at t = ${(i * dt.dwellSeconds).toFixed(2)} s${dtSel == null ? ' (last; click the plot above to pick a time)' : ''}` : ' (newest dwell)';
+    if (i != null) when = dt.fileName != null ? ` at t = ${(i * dt.hopSeconds).toFixed(2)} s${dtSel == null ? ' (last; click the plot above to pick a time)' : ''}` : ' (newest dwell)';
     $('dt-spec-title').textContent = `Doppler spectrum${when}, dB re strongest`;
     $('dt-spec-detail').textContent = peak ? `strongest ≥ ${minV.toFixed(1)} m/s: ${peak.velocity.toFixed(2)} m/s (${(peak.velocity * MPH).toFixed(1)} mph) @ ${(peak.db - dt.maxDB).toFixed(1)} dB` : '';
   }
 
   function dtSpan() {
-    const dwell = dt ? dt.dwellSeconds : params.dtDwellMs / 1000, rows = dt ? dt.nRows : 0;
+    // rows are one hop apart (= Tp without overlap)
+    const dwell = dt ? dt.hopSeconds : params.dtDwellMs / 1000 * (1 - params.dtOverlap), rows = dt ? dt.nRows : 0;
     return { dwell, rows, live: !dt || dt.fileName == null, span: !dt || dt.fileName == null ? Math.max(params.dtHistorySeconds, dwell) : Math.max(dwell, rows * dwell) };
   }
 
   function drawDTI() {
-    const { ctx, w, h } = P.setup($('dti'));
+    const { ctx, w, h, dpr } = P.setup($('dti'));
     const { dwell, rows, live, span } = dtSpan();
     const vmax = dt ? dt.cols * dt.mpsPerCol : params.dtMaxVelocity;
-    const ax = P.axes(ctx, Math.max(80, w - 64), h, { x: [0, Math.max(1, vmax)], y: [0, span], xLabel: 'velocity (m/s)', yLabel: live ? 'age (s)' : 'time (s)', yDown: true });
-    if (dtImage) {
+    const plotH = Math.max(10, h - 40);
+    const px = Math.max(40, Math.floor(plotH * dpr));
+    if (px !== dtImagePx) { dtImagePx = px; buildDTImage(); }
+    // Live: the image is drawn one row per screen pixel, never stretched or squeezed (resampling rows
+    // that scroll makes narrow tracks flicker); the age axis is scaled to match, as in the RTI plot.
+    const ySpan = live && dtImage ? px * dtSecPerPx : span;
+    const ax = P.axes(ctx, Math.max(80, w - 64), h, { x: [0, Math.max(1, vmax)], y: [0, ySpan], xLabel: 'velocity (m/s)', yLabel: live ? 'age (s)' : 'time (s)', yDown: true });
+    if (dtImage && live) {
+      const n = Math.min(dtImage.height, Math.floor(ax.rect.h * dpr));
+      ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.imageSmoothingEnabled = false;
+      ctx.drawImage(dtImage, 0, 0, dtImage.width, n, Math.round(ax.rect.x * dpr), Math.round(ax.rect.y * dpr), Math.round(ax.rect.w * dpr), n);
+      ctx.restore();
+    } else if (dtImage) {
       ctx.imageSmoothingEnabled = false;
       ctx.drawImage(dtImage, ax.rect.x, ax.rect.y, ax.rect.w, ax.rect.h * Math.min(1, rows * dwell / span));
       if (!live && dtSel != null) {

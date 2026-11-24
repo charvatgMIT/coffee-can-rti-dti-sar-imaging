@@ -29,10 +29,10 @@ struct DopplerTimeTab: View {
         let source: String = {
             if let name = dt?.fileName {
                 return String(format: "Recording: %@, %.1f s (%d dwells), IF from the %@ channel", name,
-                              Double(dt?.rows.count ?? 0) * (dt?.dwellSeconds ?? 0), dt?.rows.count ?? 0, ifSide)
+                              Double(dt?.rows.count ?? 0) * (dt?.hopSeconds ?? 0), dt?.rows.count ?? 0, ifSide)
             }
             guard model.source == .live, let dt else { return "Live input idle: press Start for the UCA222, or open a recording." }
-            return String(format: "Live: IF on the %@ input · next dwell %.0f%%", ifSide,
+            return String(format: "Live: IF on the %@ input · next row %.0f%%", ifSide,
                           100 * Double(dt.waitingSamples) / Double(max(1, dt.samplesPerDwell)))
         }()
         let method = p.dtMethod == .matrixPencil ? "matrix pencil" + (dt?.medianOrder.map { String(format: " (order %.0f)", $0) } ?? "")
@@ -118,7 +118,7 @@ struct DopplerSpectrumCard: View {
         let peak = row.flatMap { dtPeak($0, mpsPerCol: dt?.mpsPerCol ?? 1, minVelocity: max(0.5, p.dtPGAMinVelocity)) }
         let when: String = {
             guard let dt, let i = idx, i >= 0 else { return "" }
-            if dt.fileName != nil { return String(format: " at t = %.2f s%@", Double(i) * dt.dwellSeconds, model.dtSelectedRow == nil ? " (last; click the plot above to pick a time)" : "") }
+            if dt.fileName != nil { return String(format: " at t = %.2f s%@", Double(i) * dt.hopSeconds, model.dtSelectedRow == nil ? " (last; click the plot above to pick a time)" : "") }
             return " (newest dwell)"
         }()
         PlotCard(title: "Doppler spectrum\(when), dB re strongest",
@@ -170,6 +170,7 @@ struct DopplerSpectrumPlot: View {
 /// Doppler-time intensity: velocity across, time down (a recording, as MIT's plot) or age down (live).
 struct DTIPlot: View {
     @EnvironmentObject var model: RadarModel
+    @Environment(\.displayScale) private var displayScale
     private let barSpace: CGFloat = 64
 
     /// The data rectangle drawAxes uses for a canvas of this size.
@@ -181,17 +182,29 @@ struct DTIPlot: View {
         let dt = model.dt, p = model.params
         let live = dt?.fileName == nil
         let rows = dt?.rows.count ?? 0
-        let dwell = dt?.dwellSeconds ?? p.dtDwellMs / 1000
+        // rows are one hop apart (= Tp without overlap)
+        let dwell = dt?.hopSeconds ?? p.dtDwellMs / 1000 * (1 - p.dtOverlap)
+        // Live: the image is drawn one row per screen pixel, never stretched or squeezed (resampling rows
+        // that scroll makes narrow tracks flicker); the age axis is scaled to match, as in the RTI plot.
+        let secPerPx = dt?.secondsPerPixel ?? dwell
+        let liveSpan: (CGFloat) -> Double = { plotH in Double(plotH * displayScale) * secPerPx }
         let span = live ? max(p.dtHistorySeconds, dwell) : max(dwell, Double(rows) * dwell)
         let vmax = Double(dt?.cols ?? 1) * (dt?.mpsPerCol ?? 1)
         let range = max(10, p.dtDbRange)
         let sel = model.dtSelectedRow
         let waiting = model.source == .live ? "Collecting the first dwell…" : "Press Start (live CW input) or open a recording"
         Canvas { ctx, size in
+            let plotH = max(10, size.height - 40)
             let ax = drawAxes(ctx, size: CGSize(width: max(80, size.width - barSpace), height: size.height),
-                              x: (0, max(1, vmax)), y: (0, span), xLabel: "velocity (m/s)",
+                              x: (0, max(1, vmax)), y: (0, live && dt?.image != nil ? liveSpan(plotH) : span), xLabel: "velocity (m/s)",
                               yLabel: live ? "age (s)" : "time (s)", yDown: true)
-            if let img = dt?.image {
+            if live, let full = dt?.image {
+                let maxRows = Int((ax.rect.height * displayScale).rounded(.down))
+                if let img = full.cropping(to: CGRect(x: 0, y: 0, width: full.width, height: min(full.height, maxRows))) {
+                    ctx.draw(Image(decorative: img, scale: 1).interpolation(.none),
+                             in: CGRect(x: ax.rect.minX, y: ax.rect.minY, width: ax.rect.width, height: CGFloat(img.height) / displayScale))
+                }
+            } else if let img = dt?.image {
                 let frac = min(1, Double(rows) * dwell / span)
                 ctx.draw(Image(decorative: img, scale: 1).interpolation(.none),
                          in: CGRect(x: ax.rect.minX, y: ax.rect.minY, width: ax.rect.width, height: ax.rect.height * frac))
@@ -216,6 +229,15 @@ struct DTIPlot: View {
                         let t = Double((g.location.y - r.minY) / r.height) * span
                         model.dtSelectedRow = min(rows - 1, max(0, Int(t / dwell)))
                     })
+            }
+        }
+        .background {
+            // the image gets no more rows than the plot has pixels (drawAxes leaves 40 points for the axes)
+            GeometryReader { geo in
+                let px = Int(((geo.size.height - 40) * displayScale).rounded(.down))
+                Color.clear
+                    .onAppear { model.setDTPixelHeight(px) }
+                    .onChange(of: px) { _, v in model.setDTPixelHeight(v) }
             }
         }
     }
@@ -245,6 +267,15 @@ struct DopplerTimeSettings: View {
             .controlSize(.small)
             Text(vco + String(format: "λ = %.2f cm.", lam * 100)).font(.caption).foregroundStyle(.secondary)
             NumberRow(title: "Dwell Tp (ms)", value: $model.params.dtDwellMs)
+            Picker("Overlap", selection: $model.params.dtOverlap) {
+                Text("None (MIT)").tag(0.0)
+                Text("50%").tag(0.5)
+                Text("75%").tag(0.75)
+                Text("87.5%").tag(0.875)
+            }
+            Text(String(format: "A new row every %.0f ms. Overlapping dwells (a sliding window) make the plot smoother in time and use the samples a tapering window or SVA would otherwise weight down at the dwell edges; each row still spans Tp, so the velocity resolution is unchanged. Costs %.0f× the processing.",
+                        tp * 1000 * (1 - p.dtOverlap), 1 / max(0.0625, 1 - p.dtOverlap)))
+                .font(.caption).foregroundStyle(.secondary)
             NumberRow(title: "Max velocity shown (m/s)", value: $model.params.dtMaxVelocity)
             Picker("Spectrum", selection: $model.params.dtMethod) {
                 ForEach(DTMethod.allCases) { Text($0.rawValue).tag($0) }

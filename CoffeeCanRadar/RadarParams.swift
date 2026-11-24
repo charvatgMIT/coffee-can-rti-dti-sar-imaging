@@ -107,6 +107,7 @@ struct RadarParams: Equatable, Codable {
     var rdShowScatterers = false     // range-Doppler: mark the counted scatterers with ×
     // Doppler vs. time (unmodulated CW), after read_data_doppler.m
     var dtDwellMs: Double = 250      // Tp = 0.250 s per Doppler spectrum
+    var dtOverlap: Double = 0        // fraction of each dwell shared with the next (0 = MIT's back-to-back dwells)
     var dtCarrierMHz: Double = 2590  // fc (VCO Vtune at +5 V; 2495 MHz at +3.2 V stays in the ISM band)
     var dtZeroPad = 4                // zpad = 8*N/2 = 4N
     var dtWindow: WindowType = .rect

@@ -11,6 +11,7 @@
   function dtSettings(p) {
     return {
       dwellMs: Math.min(2000, Math.max(20, p.dtDwellMs)),
+      overlap: Math.min(0.9375, Math.max(0, p.dtOverlap || 0)),
       carrierMHz: Math.max(100, p.dtCarrierMHz),
       zeroPad: Math.max(1, p.dtZeroPad),
       window: p.dtWindow, sva: p.dtSVA, pga: p.dtPGA,
@@ -26,11 +27,12 @@
 
   function dtGeometry(s, fs) {
     const n = Math.max(16, Math.round(s.dwellMs / 1000 * fs));
+    const hop = Math.max(1, Math.min(n, Math.round(n * (1 - s.overlap))));   // dwell start to dwell start
     const log2m = Math.ceil(Math.log2(n)), m = 1 << log2m;
     const log2nfft = Math.min(MAX_LOG2, Math.max(log2m, Math.ceil(Math.log2(s.zeroPad * n))));
     const nfft = 1 << log2nfft, binHz = fs / nfft, lambda = lambdaOf(s);
     const cols = Math.max(4, Math.min(nfft / 2, Math.floor(2 * s.maxVelocity / lambda / binHz) + 1));
-    return { fs, n, m, log2m, nfft, log2nfft, binHz, cols, mpsPerCol: binHz * lambda / 2, lambda, dwellSeconds: n / fs };
+    return { fs, n, m, log2m, nfft, log2nfft, binHz, cols, mpsPerCol: binHz * lambda / 2, lambda, dwellSeconds: n / fs, hop, hopSeconds: hop / fs };
   }
 
   /** Per-dwell processing (DopplerTimeDSP). */
@@ -257,7 +259,10 @@
       this.reprocessAll();
     }
 
-    discontinuity() { if (this.fileName == null) this.count = this.rows.length * this.g.n; }
+    /** Samples the dwells so far have used (with overlap, the next dwell still reaches back into them). */
+    used() { return this.rows.length ? (this.rows.length - 1) * this.g.hop + this.g.n : 0; }
+
+    discontinuity() { if (this.fileName == null) this.count = Math.min(this.count, this.used()); }
 
     push(left, right) {
       if (this.fileName != null) return;
@@ -267,18 +272,19 @@
       this.levelR = this.levelR * (1 - a) + a * rmsOf(right);
       this.append(this.s.ifOnLeft ? left : right);
       let added = false;
-      while (this.count >= (this.rows.length + 1) * this.g.n) { this.processDwell(this.rows.length); added = true; }
+      while (this.count >= this.rows.length * this.g.hop + this.g.n) { this.processDwell(this.rows.length); added = true; }
       if (added) { this.trimLive(); this.publish(); }
     }
 
     trimLive() {
       if (this.fileName != null) return;
-      const keep = Math.max(1, Math.trunc(this.historySeconds / this.g.dwellSeconds));
+      const keep = Math.max(1, Math.trunc(this.historySeconds / this.g.hopSeconds));
       if (this.rows.length > keep) {
-        const drop = this.rows.length - keep, n = this.g.n;
+        const drop = this.rows.length - keep, n = this.g.hop;
         this.rows.splice(0, drop); this.rowMs.splice(0, Math.min(drop, this.rowMs.length));
         this.samples.copyWithin(0, drop * n, this.count);
         this.count -= drop * n;
+        this.dropped += drop;   // keeps the display's row groups fixed as the plot scrolls
       }
     }
 
@@ -307,7 +313,7 @@
 
     dwell(i) {
       const n = this.g.n, x = new Float64Array(n);
-      for (let t = 0; t < n; t++) x[t] = this.samples[i * n + t];
+      for (let t = 0, o = i * this.g.hop; t < n; t++) x[t] = this.samples[o + t];
       if (this.s.subtractMean) {
         let mean = this.fileMean;
         if (this.fileName == null) { mean = 0; for (let t = 0; t < n; t++) mean += x[t]; mean /= n; }
@@ -326,8 +332,8 @@
 
     reprocessAll() {
       this.g = dtGeometry(this.s, this.fs);
-      this.rows = []; this.rowMs = [];
-      const count = Math.floor(this.count / this.g.n);
+      this.rows = []; this.rowMs = []; this.dropped = 0;
+      const count = this.count < this.g.n ? 0 : Math.floor((this.count - this.g.n) / this.g.hop) + 1;
       for (let i = 0; i < count; i++) this.processDwell(i);
       this.trimLive();
       this.publish();
@@ -342,11 +348,11 @@
       const orders = rows.map(r => r.order).filter(o => o != null).sort((a, b) => a - b);
       return {
         rows: packed, nRows: rows.length, cols, lines: rows.map(r => r.lines), maxDB: rows.length ? maxDB : 0,
-        dwellSeconds: g.dwellSeconds, mpsPerCol: g.mpsPerCol, fileName: this.fileName,
+        dwellSeconds: g.dwellSeconds, hopSeconds: g.hopSeconds, firstIndex: this.fileName == null ? (this.dropped || 0) : 0, mpsPerCol: g.mpsPerCol, fileName: this.fileName,
         msPerDwell: recent.length ? recent.reduce((a, b) => a + b, 0) / recent.length : null,
         medianOrder: orders.length ? orders[Math.floor(orders.length / 2)] : null,
         pgaTried: this.s.pga ? rows.length : 0, pgaDominant: rows.filter(r => r.pga != null).length, pgaApplied: rows.filter(r => r.pga === true).length,
-        waitingSamples: Math.max(0, this.count - rows.length * g.n), samplesPerDwell: g.n,
+        waitingSamples: Math.max(0, this.count - this.used()), samplesPerDwell: rows.length ? g.hop : g.n,
         ifRMS: this.s.ifOnLeft ? this.levelL : this.levelR, otherRMS: this.s.ifOnLeft ? this.levelR : this.levelL,
       };
     }

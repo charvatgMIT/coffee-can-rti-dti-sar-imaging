@@ -50,6 +50,8 @@ reference only and is no longer updated.
   each dwell's zero-padded FFT is one row of speed (0–40 m/s, −35…0 dB re the strongest cell).
   Options: SVA, a window, prominent-point PGA on the strongest mover in each dwell, and a matrix
   pencil (ESTER, gap or threshold model order) on the band-limited, decimated analytic IF.
+  Dwells can overlap (50, 75 or 87.5%, a sliding window) for a smoother plot: a new row every
+  Tp·(1 − overlap), same velocity resolution.
   Works live from the UCA222 or on a recording (**Open recording…**, e.g. MIT's
   "Off of Newton Exit 17.wav"); click the plot to see one dwell's spectrum. On that recording the
   FFT output matches MATLAB running MIT's script to 1e-5 dB.

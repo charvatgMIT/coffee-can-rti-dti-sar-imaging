@@ -44,7 +44,7 @@ struct HowItWorksRTIContent: View {
         let dtRows: [[DiagramBlock]] = [
             [DiagramBlock(title: "Audio input (CW)", detail: "the radar run unmodulated (Vtune fixed, fc = \(Int(p.dtCarrierMHz)) MHz): only the IF on the \(ifc) input; no sync needed", active: fileName == nil, kind: .input),
              DiagramBlock(title: "Recording (.wav)", detail: fileName.map { "\($0), IF channel \(ifc)" } ?? "e.g. MIT's \"Off of Newton Exit 17.wav\"", active: fileName != nil, kind: .input)],
-            [DiagramBlock(title: "Dwells", detail: "N = Tp·fs = \(Int((p.dtDwellMs / 1000 * d.fs).rounded())) samples per Doppler spectrum (Tp = \(String(format: "%g", p.dtDwellMs)) ms)\(p.dtSubtractMean ? "; mean subtracted (the whole recording's, as MIT's script)" : "")")],
+            [DiagramBlock(title: "Dwells", detail: "N = Tp·fs = \(Int((p.dtDwellMs / 1000 * d.fs).rounded())) samples per Doppler spectrum (Tp = \(String(format: "%g", p.dtDwellMs)) ms)\(p.dtOverlap > 0 ? String(format: ", %.0f%% overlapped: a new row every %.0f ms", p.dtOverlap * 100, p.dtDwellMs * (1 - p.dtOverlap)) : "")\(p.dtSubtractMean ? "; mean subtracted (the whole recording's, as MIT's script)" : "")")],
             [DiagramBlock(title: "PGA (strongest mover)", detail: "per dwell: the dominant line's phase wander removed, keeping its mean velocity; kept only if sharper", active: p.dtPGA)],
             [DiagramBlock(title: "FFT", detail: "\(p.dtWindow.rawValue) window, zero pad \(p.dtZeroPad)×", active: !mp && !p.dtSVA),
              DiagramBlock(title: "SVA", detail: "per-bin weighting between rectangular and Hann", active: !mp && p.dtSVA),

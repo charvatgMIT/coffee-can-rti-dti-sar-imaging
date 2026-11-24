@@ -88,7 +88,7 @@
       rdSuperRes: 'Matrix pencil in range and Doppler', rdOrderRule: 'ESTER (adaptive)', rdShowScatterers: false,
       rejectGlitches: true,   // web only: skip pulses whose sync period jumps (dropped or repeated audio blocks)
       // Doppler vs. time (unmodulated CW), after read_data_doppler.m
-      dtDwellMs: 250, dtCarrierMHz: 2590, dtZeroPad: 4, dtWindow: 'Rectangular', dtSVA: false, dtPGA: false,
+      dtDwellMs: 250, dtOverlap: 0, dtCarrierMHz: 2590, dtZeroPad: 4, dtWindow: 'Rectangular', dtSVA: false, dtPGA: false,
       dtPGAMinVelocity: 1, dtMethod: 'FFT', dtOrderRule: 'ESTER (adaptive)', dtMaxTargets: 8,
       dtPencilDisplay: 'Pseudospectrum', dtMaxVelocity: 40, dtDbRange: 35, dtSubtractMean: true, dtHistorySeconds: 60,
     };

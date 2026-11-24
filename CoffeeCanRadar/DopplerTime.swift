@@ -5,11 +5,13 @@ import Foundation
 // Doppler vs. time for the radar run as an unmodulated CW radar (Vtune held fixed), after
 // MIT's read_data_doppler.m: the IF channel is cut into dwells of Tp seconds, the mean is
 // subtracted, and each dwell's zero-padded FFT gives one row of velocity v = f·λ/2.
+// Dwells may overlap (a sliding window): a new row every hop = Tp·(1 − overlap).
 // The IF is real, so approaching and receding targets look the same (speed only).
 
 /// Settings the Doppler-vs-time processing depends on; a change re-processes the history.
 struct DTSettings: Equatable {
     var dwellMs: Double
+    var overlap: Double
     var carrierMHz: Double
     var zeroPad: Int
     var window: WindowType
@@ -31,6 +33,7 @@ struct DTSettings: Equatable {
 
     init(_ p: RadarParams) {
         dwellMs = min(2000, max(20, p.dtDwellMs))
+        overlap = min(0.9375, max(0, p.dtOverlap))
         carrierMHz = max(100, p.dtCarrierMHz)
         zeroPad = max(1, p.dtZeroPad)
         window = p.dtWindow
@@ -58,6 +61,7 @@ struct DTSettings: Equatable {
 struct DTGeometry: Equatable {
     let fs: Double
     let n: Int            // samples per dwell, N = Tp*FS
+    let hop: Int          // samples from one dwell's start to the next (N without overlap)
     let m: Int            // power of two >= N (analytic signal, PGA, pencil decimation)
     let log2m: Int
     let nfft: Int         // power of two >= zeroPad*N (displayed spectrum)
@@ -70,6 +74,7 @@ struct DTGeometry: Equatable {
     init(_ s: DTSettings, fs: Double) {
         self.fs = fs
         n = max(16, Int((s.dwellMs / 1000 * fs).rounded()))
+        hop = max(1, min(n, Int((Double(n) * (1 - s.overlap)).rounded())))
         log2m = Int(ceil(log2(Double(n))))
         m = 1 << log2m
         log2nfft = min(DopplerTimeDSP.maxLog2, max(log2m, Int(ceil(log2(Double(s.zeroPad * n))))))
@@ -81,6 +86,9 @@ struct DTGeometry: Equatable {
     }
 
     var dwellSeconds: Double { Double(n) / fs }
+    var hopSeconds: Double { Double(hop) / fs }
+    /// Number of whole dwells in `count` samples.
+    func dwells(in count: Int) -> Int { count < n ? 0 : (count - n) / hop + 1 }
 }
 
 /// One dwell's spectrum: dB (amplitude of the real sine) per velocity bin, plus what the options did.
@@ -310,6 +318,8 @@ struct DTSnapshot {
     var lines: [[(velocity: Double, db: Double)]] = []
     var maxDB: Float = 0               // strongest cell (the colour scale is relative to it, as in MIT's script)
     var dwellSeconds: Double = 0.25
+    var hopSeconds: Double = 0.25      // time between rows (dwell start to dwell start)
+    var secondsPerPixel: Double = 0.25 // live: the image's time per pixel row (it is drawn one row per screen pixel)
     var mpsPerCol: Double = 0
     var cols: Int = 0
     var fileName: String?              // nil = live input
@@ -318,8 +328,8 @@ struct DTSnapshot {
     var pgaApplied = 0
     var pgaTried = 0
     var pgaDominant = 0
-    var waitingSamples = 0             // live: samples collected toward the next dwell
-    var samplesPerDwell = 0
+    var waitingSamples = 0             // live: samples collected toward the next row
+    var samplesPerDwell = 0            // live: samples needed per new row (the hop)
     var ifRMS: Double = 0              // level of the channel used as IF
     var otherRMS: Double = 0           // level of the other channel (to spot swapped inputs)
 }
@@ -330,6 +340,9 @@ final class DopplerTimeEngine {
     private let dsp = DopplerTimeDSP()
     private let lock = NSLock()
     private var pending: RadarParams?
+    private var pendingPixelRows: Int?
+    private var pixelRows = 400          // the plot's height in screen pixels: the image never has more rows
+    private var dropped = 0              // live rows trimmed so far (keeps the row groups fixed as the plot scrolls)
     private var s = DTSettings(RadarParams())
     private var dbRange = 35.0
     private var historySeconds = 60.0
@@ -337,7 +350,7 @@ final class DopplerTimeEngine {
     private var g = DTGeometry(DTSettings(RadarParams()), fs: 48000)
 
     private var samples: [Float] = []    // the IF channel: the live history, or the whole recording
-    private var rows: [DTRow] = []       // dwell i = samples[i*n ..< (i+1)*n]
+    private var rows: [DTRow] = []       // dwell i = samples[i*hop ..< i*hop + n]
     private var rowMs: [Double] = []
     private var fileName: String?
     private var fileL: [Float] = [], fileR: [Float] = []
@@ -350,8 +363,12 @@ final class DopplerTimeEngine {
     /// Thread safe: remembers the newest settings; `applyPending` (on the queue) uses them.
     func request(_ p: RadarParams) { lock.lock(); pending = p; lock.unlock() }
 
+    /// Thread safe: the plot's height in screen pixels; `applyPending` redraws the image to fit.
+    func requestPixelRows(_ px: Int) { lock.lock(); pendingPixelRows = max(40, min(4000, px)); lock.unlock() }
+
     func applyPending() {
-        lock.lock(); let p = pending; pending = nil; lock.unlock()
+        lock.lock(); let p = pending, px = pendingPixelRows; pending = nil; pendingPixelRows = nil; lock.unlock()
+        if let px, px != pixelRows { pixelRows = px; if p == nil { publish() } }
         guard let p else { return }
         let ns = DTSettings(p)
         let rangeChanged = p.dtDbRange != dbRange
@@ -388,7 +405,9 @@ final class DopplerTimeEngine {
     /// A gap in the live audio: drop the partial dwell.
     func discontinuity() {
         guard fileName == nil else { return }
-        samples.removeLast(samples.count - rows.count * g.n)
+        // keep only what the dwells already made used (with overlap, the next dwell still spans the gap)
+        let used = rows.isEmpty ? 0 : (rows.count - 1) * g.hop + g.n
+        if samples.count > used { samples.removeLast(samples.count - used) }
     }
 
     func push(_ left: [Float], _ right: [Float]) {
@@ -399,7 +418,7 @@ final class DopplerTimeEngine {
         levelR = levelR * (1 - a) + a * rmsOf(right)
         samples.append(contentsOf: s.ifOnLeft ? left : right)
         var added = false
-        while samples.count >= (rows.count + 1) * g.n {
+        while samples.count >= rows.count * g.hop + g.n {
             processDwell(rows.count)
             added = true
         }
@@ -408,11 +427,12 @@ final class DopplerTimeEngine {
 
     private func trimLive() {
         guard fileName == nil else { return }
-        let keep = max(1, Int(historySeconds / g.dwellSeconds))
+        let keep = max(1, Int(historySeconds / g.hopSeconds))
         if rows.count > keep {
             let drop = rows.count - keep
             rows.removeFirst(drop); rowMs.removeFirst(min(drop, rowMs.count))
-            samples.removeFirst(drop * g.n)
+            samples.removeFirst(drop * g.hop)
+            dropped += drop
         }
     }
 
@@ -446,8 +466,8 @@ final class DopplerTimeEngine {
 
     private func reprocessAll() {
         g = DTGeometry(s, fs: fs)
-        rows.removeAll(); rowMs.removeAll()
-        let count = samples.count / g.n
+        rows.removeAll(); rowMs.removeAll(); dropped = 0
+        let count = g.dwells(in: samples.count)
         if count > 8 {
             // dwells in parallel, each worker with its own DSP state
             var out = [DTRow?](repeating: nil, count: count)
@@ -480,7 +500,7 @@ final class DopplerTimeEngine {
     }
 
     private static func dwell(_ sp: UnsafeBufferPointer<Float>, _ i: Int, _ g: DTGeometry, _ s: DTSettings, fileMean: Double?) -> [Double] {
-        var x = (0..<g.n).map { Double(sp[i * g.n + $0]) }
+        var x = (0..<g.n).map { Double(sp[i * g.hop + $0]) }
         if s.subtractMean {
             let mean = fileMean ?? x.reduce(0, +) / Double(g.n)
             for t in x.indices { x[t] -= mean }
@@ -502,12 +522,13 @@ final class DopplerTimeEngine {
         snap.rows = rows.map(\.db)
         snap.lines = rows.map(\.lines)
         snap.dwellSeconds = g.dwellSeconds
+        snap.hopSeconds = g.hopSeconds
         snap.mpsPerCol = g.mpsPerCol
         snap.cols = g.cols
         snap.fileName = fileName
-        snap.samplesPerDwell = g.n
+        snap.samplesPerDwell = rows.isEmpty ? g.n : g.hop
         (snap.ifRMS, snap.otherRMS) = s.ifOnLeft ? (levelL, levelR) : (levelR, levelL)
-        snap.waitingSamples = max(0, samples.count - rows.count * g.n)
+        snap.waitingSamples = max(0, samples.count - (rows.isEmpty ? 0 : (rows.count - 1) * g.hop + g.n))
         let recent = rowMs.suffix(40)
         snap.msPerDwell = recent.isEmpty ? nil : recent.reduce(0, +) / Double(recent.count)
         let orders = rows.compactMap(\.order).sorted()
@@ -516,27 +537,46 @@ final class DopplerTimeEngine {
         snap.pgaDominant = rows.filter { $0.pga != nil }.count
         snap.pgaApplied = rows.filter { $0.pga == true }.count
         snap.maxDB = rows.lazy.compactMap { $0.db.max() }.max() ?? 0
-        snap.image = makeImage(snap.rows, cols: g.cols, top: snap.maxDB, newestFirst: fileName == nil)
+        // rows per image row: fixed by the span shown (the live history, or the whole recording)
+        let spanRows = fileName == nil ? max(rows.count, Int(historySeconds / g.hopSeconds)) : rows.count
+        let perRow = max(1, (spanRows + pixelRows - 1) / pixelRows)
+        // fewer rows than pixels: each row repeated a whole number of times
+        let repeatRows = perRow == 1 ? max(1, pixelRows / max(1, spanRows)) : 1
+        snap.secondsPerPixel = Double(perRow) * g.hopSeconds / Double(repeatRows)
+        snap.image = makeImage(snap.rows, cols: g.cols, top: snap.maxDB, newestFirst: fileName == nil,
+                               perRow: perRow, repeatRows: repeatRows, firstIndex: fileName == nil ? dropped : 0)
         onSnapshot?(snap)
     }
 
-    /// Jet-coloured image, width = velocity bins, one row per dwell (newest at the top when live,
-    /// time running down from the top for a recording, as MIT's imagesc plot).
-    private func makeImage(_ rows: [[Float]], cols: Int, top: Float, newestFirst: Bool) -> CGImage? {
+    /// Jet-coloured image, width = velocity bins, newest at the top when live, time running down
+    /// from the top for a recording (as MIT's imagesc plot). Each image row combines `perRow` dwells
+    /// (the strongest value in each bin, so brief movers stay visible), so the image is no taller
+    /// than the plot: drawing a taller image drops a different set of rows each time it scrolls,
+    /// which flickers. Groups are fixed by the dwell's absolute index (`firstIndex` = index of rows[0]).
+    private func makeImage(_ rows: [[Float]], cols: Int, top: Float, newestFirst: Bool, perRow: Int, repeatRows: Int, firstIndex: Int) -> CGImage? {
         guard !rows.isEmpty, cols > 0 else { return nil }
-        let h = rows.count
+        // group g holds absolute dwells g*perRow ..< (g+1)*perRow
+        let g0 = firstIndex / perRow, g1 = (firstIndex + rows.count - 1) / perRow
+        let h = g1 - g0 + 1
+        var combined = [[Float]](repeating: [Float](repeating: -.infinity, count: cols), count: h)
+        for (i, src) in rows.enumerated() {
+            let gi = (firstIndex + i) / perRow - g0
+            for k in 0..<min(cols, src.count) where src[k] > combined[gi][k] { combined[gi][k] = src[k] }
+        }
         let lo = top - Float(dbRange), cs = Float(255 / max(1, dbRange))
-        var rgba = [UInt8](repeating: 255, count: h * cols * 4)
-        for r in 0..<h {
-            let src = rows[newestFirst ? h - 1 - r : r]
-            for k in 0..<min(cols, src.count) {
+        let hOut = h * repeatRows
+        var rgba = [UInt8](repeating: 255, count: hOut * cols * 4)
+        for r in 0..<hOut {
+            let gr = r / repeatRows
+            let src = combined[newestFirst ? h - 1 - gr : gr]
+            for k in 0..<cols {
                 let c = Int(max(0, min(255, ((src[k] - lo) * cs).rounded()))) * 4
                 let i = (r * cols + k) * 4
                 rgba[i] = RTIBuffer.jet[c]; rgba[i + 1] = RTIBuffer.jet[c + 1]; rgba[i + 2] = RTIBuffer.jet[c + 2]
             }
         }
         guard let provider = CGDataProvider(data: Data(rgba) as CFData) else { return nil }
-        return CGImage(width: cols, height: h, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: cols * 4,
+        return CGImage(width: cols, height: hOut, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: cols * 4,
                        space: CGColorSpace(name: CGColorSpace.sRGB)!,
                        bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipLast.rawValue),
                        provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent)

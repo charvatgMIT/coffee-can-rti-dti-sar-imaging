@@ -11,7 +11,7 @@ simulator and can play a stereo .wav recording through the processing.
 The **Doppler vs. time** tab is for the radar run as an unmodulated CW radar (Vtune held fixed),
 after MIT's `read_data_doppler.m`: FFT, SVA, window, prominent-point PGA and matrix pencil, live or
 from a recording (click the plot to see one dwell's spectrum), with the IF channel swap and a level
-check. As in the Mac app, only the selected tab's processing runs. The simulator gives FMCW targets
+check. Dwells can overlap (50, 75 or 87.5%) for a smoother plot at the same velocity resolution. As in the Mac app, only the selected tab's processing runs. The simulator gives FMCW targets
 on the Radar tab and a CW car and walker on the Doppler tab.
 
 The **SAR imaging** tab forms images from rail recordings, as the Mac app's: MIT Experiment 3
@@ -71,7 +71,8 @@ and the Mac app (`--rti-dump`) and compares every pulse:
 - Doppler vs. time on MIT's "Off of Newton Exit 17.wav" (`test/run_compare_dti.sh`, against the
   Mac app's `--doppler-dump`, which matches MATLAB running MIT's script): FFT, SVA, PGA (253 of 282
   dwells focused in both), matrix pencil with and without PGA, gap rule and 8× zero-padding all
-  identical within the colour range.
+  identical within the colour range; so are 50, 75 and 87.5% overlapped dwells (FFT, SVA, PGA,
+  matrix pencil).
 - SAR imaging on MIT's `towardswarehouse.wav` (`test/run_compare_sar.sh`, against the Mac app's
   `--sar-dump`): backprojection (default and MIT-exact parsing), range migration, SVA joint /
   separate / dual and with range migration, range and crossrange matrix pencil, the display options

@@ -395,6 +395,13 @@ final class RadarModel: ObservableObject {
 
     // MARK: Doppler vs. time
 
+    /// The Doppler-vs-time plot's height in screen pixels: its image gets at most that many rows.
+    func setDTPixelHeight(_ px: Int) {
+        let eng = dtEngine
+        eng.requestPixelRows(px)
+        dtQueue.async { eng.applyPending() }
+    }
+
     private func requestDopplerUpdate() {
         let eng = dtEngine
         eng.request(params)
