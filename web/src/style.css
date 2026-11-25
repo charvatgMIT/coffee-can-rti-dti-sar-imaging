@@ -67,7 +67,8 @@ input[type=number] { width: 84px; text-align: right; }
 .row { display: flex; gap: 8px; align-items: center; }
 .row.grow { flex: 1; min-height: 0; align-items: stretch; }
 .slider-row label { color: var(--text2); white-space: nowrap; }
-.slider-row input[type=range] { flex: 1; max-width: 320px; }
+.slider-row { flex-wrap: wrap; row-gap: 4px; }
+.slider-row input[type=range] { flex: 1; min-width: 90px; max-width: 320px; }
 .small-text { font-size: 12px; }
 .card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px; display: flex; flex-direction: column; gap: 4px; min-height: 160px; min-width: 0; }
 .card.grow { flex: 1; }

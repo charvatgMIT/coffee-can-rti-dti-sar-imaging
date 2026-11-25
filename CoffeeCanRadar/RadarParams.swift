@@ -120,6 +120,7 @@ struct RadarParams: Equatable, Codable {
     var dtPencilDisplay: PencilDisplay = .pseudospectrum
     var dtMaxVelocity: Double = 40   // xlim([0 40])
     var dtDbRange: Double = 35       // imagesc(..., [-35, 0])
+    var dtTopOffsetDB: Double = 0    // top of the colour scale re the strongest cell (0 = MIT's plot)
     var dtSubtractMean = true        // sif = sif - mean(s)
     var dtHistorySeconds: Double = 60   // live history kept
 }

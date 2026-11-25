@@ -34,7 +34,7 @@
     if (params.rtiSeconds !== old.rtiSeconds) resetRTI(rti.width);
     else if (params.rtiViewSeconds !== old.rtiViewSeconds) rti.setView(viewPulses(), params.dbTop, params.rtiDbRange);
     else if (params.dbTop !== old.dbTop || params.rtiDbRange !== old.rtiDbRange) rti.recolor(params.dbTop, params.rtiDbRange);
-    if (params.dtDbRange !== old.dtDbRange) buildDTImage();
+    if (params.dtDbRange !== old.dtDbRange || params.dtTopOffsetDB !== old.dtTopOffsetDB) buildDTImage();
     refreshSidebar();
     syncControls();
     if (activeTab === 'how') renderHow();
@@ -465,6 +465,7 @@ registerProcessor('ccr-capture', CCRCapture);`;
     $('maxrange-val').textContent = `${(shown * u.per).toFixed(1)} ${u.ab}`;
     $('maxrange-full').disabled = params.maxRangeShown === 0;
     $('rti-range').value = params.rtiDbRange; $('rti-range-val').textContent = `${params.rtiDbRange} dB`;
+    $('rti-top').value = params.dbTop; $('rti-top-val').textContent = `${Math.round(params.dbTop)} dB`;
     const span = $('rti-span');
     span.min = Math.log10(0.5); span.max = Math.log10(params.rtiSeconds); span.step = 0.001;
     if (document.activeElement !== span) span.value = Math.log10(viewSecondsShown());
@@ -476,6 +477,9 @@ registerProcessor('ccr-capture', CCRCapture);`;
   $('maxrange').oninput = (e) => { const v = +e.target.value; setParams({ maxRangeShown: v >= d.maxRange * 0.999 ? 0 : Math.round(v * 10) / 10 }); };
   $('maxrange-full').onclick = () => setParams({ maxRangeShown: 0 });
   $('rti-range').oninput = (e) => setParams({ rtiDbRange: Math.round(+e.target.value) });
+  // the top dB of the RTI, range profile and range-Doppler colour scales; moving it by hand turns off "Track top automatically"
+  $('rti-top').oninput = (e) => setParams({ dbTop: Math.round(+e.target.value), autoTop: false });
+  $('rti-top-auto').onclick = () => autoScale();
   $('rti-span').oninput = (e) => {
     const s = Math.pow(10, +e.target.value), r = s < 10 ? Math.round(s * 10) / 10 : Math.round(s);
     setParams({ rtiViewSeconds: r >= params.rtiSeconds ? 0 : r });
@@ -1087,6 +1091,8 @@ registerProcessor('ccr-capture', CCRCapture);`;
   $('dt-swap').onclick = () => setParams({ syncOnRight: !params.syncOnRight });
   document.querySelectorAll('#dt-if button').forEach(b => b.onclick = () => setParams({ syncOnRight: b.dataset.v === 'true' }));
   $('dt-range').oninput = (e) => setParams({ dtDbRange: Math.round(+e.target.value) });
+  $('dt-top').oninput = (e) => setParams({ dtTopOffsetDB: Math.round(+e.target.value) });
+  $('dt-top-auto').onclick = () => setParams({ dtTopOffsetDB: 0 });
   $('dt-vmax').oninput = (e) => setParams({ dtMaxVelocity: Math.round(+e.target.value) });
 
   /** Jet image of the Doppler rows: newest at the top when live, time running down for a recording (MIT's plot). */
@@ -1108,7 +1114,7 @@ registerProcessor('ccr-capture', CCRCapture);`;
       const gi = Math.floor((first + i) / perRow) - g0, o = gi * cols, src = i * cols;
       for (let k = 0; k < cols; k++) if (rows[src + k] > comb[o + k]) comb[o + k] = rows[src + k];
     }
-    const range = Math.max(1, params.dtDbRange), lo = maxDB - range, cs = 255 / range;
+    const range = Math.max(1, params.dtDbRange), lo = maxDB + params.dtTopOffsetDB - range, cs = 255 / range;
     const hOut = h * rep, rgba = new Uint8ClampedArray(hOut * cols * 4);
     for (let r = 0; r < hOut; r++) {
       const gr = Math.floor(r / rep), src = (live ? h - 1 - gr : gr) * cols, dst = r * cols * 4;
@@ -1160,8 +1166,10 @@ registerProcessor('ccr-capture', CCRCapture);`;
     const method = p.dtMethod === 'Matrix pencil' ? 'matrix pencil' + (dt && dt.medianOrder != null ? ` (order ${dt.medianOrder})` : '') : p.dtSVA ? 'FFT + SVA' : `FFT, ${p.dtWindow.toLowerCase()} window`;
     const pga = p.dtPGA ? (dt ? ` · PGA on ${dt.pgaApplied} of ${dt.pgaTried} dwells` : ' · PGA') : '';
     $('dt-title').textContent = `Doppler vs. time (CW), speed toward or away: ${method}${pga}`;
-    $('dt-detail').textContent = `Tp ${((dt ? dt.dwellSeconds : p.dtDwellMs / 1000) * 1000).toFixed(0)} ms · ${(dt ? dt.mpsPerCol : 0).toFixed(3)} m/s per bin · colour −${p.dtDbRange}…0 dB re strongest` + (dt && dt.msPerDwell != null ? ` · ${dt.msPerDwell.toFixed(1)} ms/dwell` : '');
+    $('dt-detail').textContent = `Tp ${((dt ? dt.dwellSeconds : p.dtDwellMs / 1000) * 1000).toFixed(0)} ms · ${(dt ? dt.mpsPerCol : 0).toFixed(3)} m/s per bin · colour ${p.dtTopOffsetDB - p.dtDbRange}…${p.dtTopOffsetDB} dB re strongest` + (dt && dt.msPerDwell != null ? ` · ${dt.msPerDwell.toFixed(1)} ms/dwell` : '');
     $('dt-range').value = p.dtDbRange; $('dt-range-val').textContent = `${p.dtDbRange} dB`;
+    $('dt-top').value = p.dtTopOffsetDB; $('dt-top-val').textContent = p.dtTopOffsetDB === 0 ? 'strongest' : `${p.dtTopOffsetDB > 0 ? '+' : ''}${p.dtTopOffsetDB} dB`;
+    $('dt-top-auto').disabled = p.dtTopOffsetDB === 0;
     $('dt-vmax').value = p.dtMaxVelocity; $('dt-vmax-val').textContent = `${p.dtMaxVelocity} m/s`;
     const i = dtRowIndex(), minV = Math.max(0.5, p.dtPGAMinVelocity);
     const peak = i != null ? dtPeak(dtRow(i), dt.mpsPerCol, minV) : null;
@@ -1205,7 +1213,7 @@ registerProcessor('ccr-capture', CCRCapture);`;
       P.centerText(ctx, ax, dtBusy ? 'Processing…' : source === 'live' || source === 'sim' ? 'Collecting the first dwell…' : 'Press Start (live CW input), Simulate, or open a recording');
     }
     P.border(ctx, ax);
-    P.colorBar(ctx, { x: ax.rect.x + ax.rect.w + 14, y: ax.rect.y, w: 12, h: ax.rect.h }, 0, Math.max(10, params.dtDbRange));
+    P.colorBar(ctx, { x: ax.rect.x + ax.rect.w + 14, y: ax.rect.y, w: 12, h: ax.rect.h }, params.dtTopOffsetDB, Math.max(10, params.dtDbRange));
   }
 
   // click or drag on a recording's plot picks the dwell shown in the spectrum

@@ -81,8 +81,8 @@ struct DopplerTimeTab: View {
                 .background(RoundedRectangle(cornerRadius: 8).fill(Color.orange.opacity(0.12)))
             }
             PlotCard(title: "Doppler vs. time (CW), speed toward or away: \(method)\(pga)",
-                     detail: String(format: "Tp %.0f ms · %.3f m/s per bin · colour −%.0f…0 dB re strongest", (dt?.dwellSeconds ?? p.dtDwellMs / 1000) * 1000,
-                                    dt?.mpsPerCol ?? 0, p.dtDbRange) + ms) {
+                     detail: String(format: "Tp %.0f ms · %.3f m/s per bin · colour %.0f…%.0f dB re strongest", (dt?.dwellSeconds ?? p.dtDwellMs / 1000) * 1000,
+                                    dt?.mpsPerCol ?? 0, p.dtTopOffsetDB - p.dtDbRange, p.dtTopOffsetDB) + ms) {
                 VStack(spacing: 4) {
                     DTIPlot()
                     HStack {
@@ -90,7 +90,15 @@ struct DopplerTimeTab: View {
                         Slider(value: Binding(get: { model.params.dtDbRange }, set: { model.params.dtDbRange = $0.rounded() }), in: 10...80)
                             .frame(maxWidth: 260)
                         Text("\(Int(p.dtDbRange)) dB").monospacedDigit().frame(width: 48, alignment: .trailing)
-                        Spacer(minLength: 24)
+                        Spacer(minLength: 16)
+                        Text("Max value")
+                        Slider(value: Binding(get: { model.params.dtTopOffsetDB }, set: { model.params.dtTopOffsetDB = $0.rounded() }), in: -40...10)
+                            .frame(maxWidth: 200)
+                        Text(p.dtTopOffsetDB == 0 ? "strongest" : String(format: "%+.0f dB", p.dtTopOffsetDB)).monospacedDigit().frame(width: 64, alignment: .trailing)
+                        Button("Auto") { model.params.dtTopOffsetDB = 0 }
+                            .disabled(p.dtTopOffsetDB == 0)
+                            .help("Put the top of the colour scale back on the strongest cell, as MIT's plot")
+                        Spacer(minLength: 16)
                         Text("Max velocity")
                         Slider(value: Binding(get: { model.params.dtMaxVelocity }, set: { model.params.dtMaxVelocity = $0.rounded() }), in: 5...100)
                             .frame(maxWidth: 260)
@@ -190,7 +198,7 @@ struct DTIPlot: View {
         let liveSpan: (CGFloat) -> Double = { plotH in Double(plotH * displayScale) * secPerPx }
         let span = live ? max(p.dtHistorySeconds, dwell) : max(dwell, Double(rows) * dwell)
         let vmax = Double(dt?.cols ?? 1) * (dt?.mpsPerCol ?? 1)
-        let range = max(10, p.dtDbRange)
+        let range = max(10, p.dtDbRange), topOffset = p.dtTopOffsetDB
         let sel = model.dtSelectedRow
         let waiting = model.source == .live ? "Collecting the first dwell…" : "Press Start (live CW input) or open a recording"
         Canvas { ctx, size in
@@ -218,7 +226,7 @@ struct DTIPlot: View {
             }
             strokeBorder(ctx, ax)
             drawColorBar(ctx, rect: CGRect(x: ax.rect.maxX + 14, y: ax.rect.minY, width: 12, height: ax.rect.height),
-                         top: 0, range: range)
+                         top: topOffset, range: range)
         }
         .overlay {
             GeometryReader { geo in

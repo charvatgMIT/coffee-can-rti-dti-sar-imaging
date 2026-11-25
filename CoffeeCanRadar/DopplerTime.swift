@@ -345,6 +345,7 @@ final class DopplerTimeEngine {
     private var dropped = 0              // live rows trimmed so far (keeps the row groups fixed as the plot scrolls)
     private var s = DTSettings(RadarParams())
     private var dbRange = 35.0
+    private var topOffset = 0.0         // colour-scale top re the strongest cell
     private var historySeconds = 60.0
     private var liveFs = 48000.0
     private var g = DTGeometry(DTSettings(RadarParams()), fs: 48000)
@@ -371,8 +372,9 @@ final class DopplerTimeEngine {
         if let px, px != pixelRows { pixelRows = px; if p == nil { publish() } }
         guard let p else { return }
         let ns = DTSettings(p)
-        let rangeChanged = p.dtDbRange != dbRange
+        let rangeChanged = p.dtDbRange != dbRange || p.dtTopOffsetDB != topOffset
         dbRange = p.dtDbRange
+        topOffset = p.dtTopOffsetDB
         historySeconds = p.dtHistorySeconds
         if ns != s {
             let channelChanged = ns.ifOnLeft != s.ifOnLeft
@@ -543,7 +545,7 @@ final class DopplerTimeEngine {
         // fewer rows than pixels: each row repeated a whole number of times
         let repeatRows = perRow == 1 ? max(1, pixelRows / max(1, spanRows)) : 1
         snap.secondsPerPixel = Double(perRow) * g.hopSeconds / Double(repeatRows)
-        snap.image = makeImage(snap.rows, cols: g.cols, top: snap.maxDB, newestFirst: fileName == nil,
+        snap.image = makeImage(snap.rows, cols: g.cols, top: snap.maxDB + Float(topOffset), newestFirst: fileName == nil,
                                perRow: perRow, repeatRows: repeatRows, firstIndex: fileName == nil ? dropped : 0)
         onSnapshot?(snap)
     }

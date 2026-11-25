@@ -37,9 +37,19 @@ struct ContentView: View {
                             HStack {
                                 Text("Dynamic range")
                                 Slider(value: Binding(get: { model.params.rtiDbRange }, set: { model.params.rtiDbRange = $0.rounded() }), in: 10...100)
-                                    .frame(maxWidth: 320)
+                                    .frame(maxWidth: 240)
                                 Text("\(Int(model.params.rtiDbRange)) dB").monospacedDigit().frame(width: 48, alignment: .trailing)
-                                Spacer(minLength: 24)
+                                Spacer(minLength: 16)
+                                Text("Max value")
+                                // the top dB of the RTI, range profile and range-Doppler colour scales;
+                                // moving it by hand turns off "Track top automatically"
+                                Slider(value: Binding(get: { min(40, max(-100, model.params.dbTop)) },
+                                                      set: { model.params.dbTop = $0.rounded(); model.params.autoTop = false }), in: -100...40)
+                                    .frame(maxWidth: 240)
+                                Text("\(Int(model.params.dbTop)) dB").monospacedDigit().frame(width: 48, alignment: .trailing)
+                                Button("Auto") { model.autoScale() }
+                                    .help("Put the top of the colour scale just above the strongest return in the current range profile")
+                                Spacer(minLength: 16)
                                 Text("Time span")
                                 // logarithmic: fine control over short spans
                                 Slider(value: Binding(get: { log10(model.rtiViewSecondsShown) },
