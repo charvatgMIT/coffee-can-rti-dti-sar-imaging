@@ -118,3 +118,10 @@ simulator, `--open-doppler <file.wav>` opens a CW recording in the Doppler vs. t
 data, and `--rti-dump` and `--sar-dump` write the RTI and SAR outputs for the web version's checks, and
 `--doppler-dump <file.wav> <out.f32>` writes its Doppler vs. time rows (dB re the strongest
 cell, float32) for comparison with MATLAB.
+
+## License
+
+MIT License, copyright (c) 2026 Gregory L. Charvat and Jared Smith. See [LICENSE](LICENSE).
+The signal processing follows the original MATLAB scripts from MIT OpenCourseWare
+RES.LL-003 (IAP 2011), "Build a Small Radar System Capable of Sensing Range, Doppler, and
+Synthetic Aperture Radar Imaging".

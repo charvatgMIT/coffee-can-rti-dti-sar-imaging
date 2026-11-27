@@ -36,11 +36,6 @@ final class SARModel: ObservableObject {
     }
 
     private static func loadParams() -> SARParams {
-        // first run of the combined app: take the settings over from the stand-alone Coffee Can SAR app
-        if UserDefaults.standard.data(forKey: "SARParams") == nil,
-           let old = UserDefaults(suiteName: "org.coffeecanradar.CoffeeCanSAR")?.data(forKey: "SARParams") {
-            UserDefaults.standard.set(old, forKey: "SARParams")
-        }
         guard let d = UserDefaults.standard.data(forKey: "SARParams"),
               let saved = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
               let defData = try? JSONEncoder().encode(SARParams()),
